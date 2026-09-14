@@ -48,6 +48,48 @@ node bot.js
 
 ---
 
+## 一之二、容器開發（本機不裝 Node）
+
+`package.json` 要求 Node >= 26，而 `node:sqlite` 要 22.5 以上才有。與其在
+開發機折騰版本，不如讓容器決定 —— 反正部署本來就走容器，兩邊用同一個
+基底映像也少一類「我這邊好好的」。
+
+```
+docker compose -f docker-compose.dev.yml up --build     # 第一次
+docker compose -f docker-compose.dev.yml up             # 之後
+```
+
+原始碼是 bind mount 進去的，改完**重啟容器**就生效，不用重新 build。
+改了 `package.json` 才需要 `--build -V`（`-V` 是為了丟掉裝著舊依賴的
+匿名 volume）。
+
+### 開發迴圈
+
+| 改了什麼 | 要做什麼 |
+|---|---|
+| 指令的**處理邏輯** | 重啟容器 |
+| 指令的**定義**（名稱／描述／選項） | 重啟容器，再私訊 bot `deploy!` |
+| `package.json` | `up --build -V` |
+
+bot 的管理指令走**私訊**，而且只認 `.env` 裡的 `ADMIN`：
+
+| 私訊 | 作用 |
+|---|---|
+| `deploy!` | 重新註冊 slash command |
+| `r!` | 關掉 bot |
+
+### ⚠️ 不要用 nodemon 或 --watch
+
+這是這個專案跟一般 Node 開發最不一樣的地方。
+
+**每次重啟 = 一次 Discord identify，而 identify 有每日上限。** 存檔就重啟
+的習慣在別的專案是效率，在 Discord bot 上是把配額燒光 —— 而撞到上限的
+症狀是 bot 連不上，看起來像 token 壞了，你會往完全錯誤的方向查。
+
+手動重啟就好。一天幾十次沒問題，自動存檔觸發就不是。
+
+---
+
 ## 二、在 Pi 上跑
 
 `.env` 除了上面四個，還要加一行：

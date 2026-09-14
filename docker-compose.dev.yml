@@ -1,0 +1,43 @@
+# query-bot —— 本機容器開發（Windows）
+#
+# 為什麼用容器開發：package.json 要求 Node >= 26，而 node:sqlite 要
+# 22.5 以上才有。與其在開發機上折騰 Node 版本，不如讓容器決定版本 ——
+# 反正部署本來就走容器，兩邊用同一個基底映像也少一類「我這邊好好的」。
+#
+#   第一次：  docker compose -f docker-compose.dev.yml up --build
+#   之後：    docker compose -f docker-compose.dev.yml up
+#   看日誌：  docker compose -f docker-compose.dev.yml logs -f
+#
+# ⚠️ 開發機是 x86、Pi 是 arm64。這支 bot 沒有原生模組要編，所以不影響，
+#    但真的要在本機驗 arm64 映像的話用 --platform linux/arm64。
+
+services:
+  bot:
+    build: .
+    image: ygo_bot:dev
+    container_name: ygo_bot_dev
+
+    # ⚠️ 開發時**不要**設 restart policy。
+    #    crash 就讓它停著，才看得到是為什麼掛的。
+    restart: "no"
+
+    env_file: .env
+    environment:
+      TZ: Asia/Taipei
+
+    volumes:
+      # 原始碼掛進去，改完重啟就生效，不用重新 build。
+      - .:/app
+      # ⚠️ 但 node_modules 不能被上面那行蓋掉 —— host 上根本沒有它。
+      #    這個匿名 volume 把映像裡裝好的依賴保留住。
+      #    改了 package.json 之後要 --build，而且要 -V 丟掉舊的匿名 volume：
+      #      docker compose -f docker-compose.dev.yml up --build -V
+      - /app/node_modules
+
+    # 如果掛載進來的 db/ 寫不進去（Docker Desktop 的權限設定因人而異），
+    # 開發時可以暫時加這行繞過。⚠️ 只在 dev 用，正式部署不要。
+    # user: root
+
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
