@@ -22,7 +22,7 @@ import { choice_table } from './common_all.js';
 const DB_PATH = new URL('./db/ruling.db', import.meta.url).pathname;
 const db = new DatabaseSync(DB_PATH);
 
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 {
 	const v = db.prepare('PRAGMA user_version').get().user_version;
 	if (v < 2) {
@@ -36,13 +36,30 @@ const SCHEMA_VERSION = 2;
 				PRIMARY KEY (norm, card_id)
 			);
 			CREATE INDEX IF NOT EXISTS idx_card_alias_norm ON card_alias (norm);
-			PRAGMA user_version = ${SCHEMA_VERSION};
 		`);
+	}
+	if (v < 3) {
+		// v3：提案流程。status 決定這條別名算不算數 ——
+		// 'proposed' 只存著不進索引，'approved' 才會被 suggest 看到。
+		for (const [col, ddl] of [
+			['status', "TEXT NOT NULL DEFAULT 'approved'"],
+			['proposed_by', 'TEXT'],
+			['created_at', 'INTEGER'],
+		]) {
+			if (!db.prepare('PRAGMA table_info(card_alias)').all().some(c => c.name === col))
+				db.exec(`ALTER TABLE card_alias ADD COLUMN ${col} ${ddl}`);
+		}
+		db.exec('CREATE INDEX IF NOT EXISTS idx_card_alias_status ON card_alias (status)');
+	}
+	if (v < SCHEMA_VERSION) {
+		db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
 		console.log(`[alias] schema 遷移 ${v} -> ${SCHEMA_VERSION}`);
 	}
 }
 
-const stmt_all_alias = db.prepare('SELECT norm, card_id, raw, kind, weight FROM card_alias');
+// ⚠️ 只撈 approved。提案不進索引 —— 沒審過的俗稱指錯卡的話，使用者
+//    看到的是「查了某張卡的裁定」卻拿到另一張卡的結果，比查不到更糟。
+const stmt_all_alias = db.prepare("SELECT norm, card_id, raw, kind, weight FROM card_alias WHERE status = 'approved'");
 const stmt_put_alias = db.prepare(`
 	INSERT INTO card_alias (norm, card_id, raw, kind, weight) VALUES (?, ?, ?, ?, ?)
 	ON CONFLICT(norm, card_id) DO UPDATE SET raw = excluded.raw, kind = excluded.kind, weight = excluded.weight
@@ -261,3 +278,77 @@ export function load_seed() {
 const stats = build_index();
 const seed = load_seed();
 console.log(`[alias] 索引 ${stats.keys} 鍵 / ${stats.cards} 張卡，種子 +${seed.loaded}（跳過 ${seed.skipped}）`);
+
+// ---------------------------------------------------------------- 提案流程
+
+const stmt_propose = db.prepare(`
+	INSERT INTO card_alias (norm, card_id, raw, kind, weight, status, proposed_by, created_at)
+	VALUES (?, ?, ?, 'community', 0, 'proposed', ?, ?)
+	ON CONFLICT(norm, card_id) DO NOTHING
+`);
+const stmt_status = db.prepare('SELECT status FROM card_alias WHERE norm = ? AND card_id = ?');
+const stmt_list_proposed = db.prepare(`
+	SELECT rowid, norm, card_id, raw, proposed_by, created_at FROM card_alias
+	WHERE status = 'proposed' ORDER BY created_at LIMIT ?
+`);
+const stmt_by_rowid = db.prepare('SELECT rowid, norm, card_id, raw, status FROM card_alias WHERE rowid = ?');
+const stmt_set_status_rowid = db.prepare("UPDATE card_alias SET status = 'approved' WHERE rowid = ?");
+const stmt_delete_rowid = db.prepare('DELETE FROM card_alias WHERE rowid = ?');
+const stmt_set_status = db.prepare('UPDATE card_alias SET status = ? WHERE norm = ? AND card_id = ?');
+
+/** 每人每日最多幾筆提案。防的是灌水，不是惡意 —— 惡意要靠審核擋。 */
+const PROPOSE_PER_DAY = 10;
+const propose_count = new Map();
+
+function quota_ok(user_id) {
+	const today = new Date().toISOString().slice(0, 10);
+	const key = `${user_id}\u0000${today}`;
+	const n = (propose_count.get(key) ?? 0) + 1;
+	propose_count.set(key, n);
+	return n <= PROPOSE_PER_DAY;
+}
+
+/**
+ * 提出一條別名。**不會進索引**，要等 approve。
+ * @returns {'ok'|'exists'|'approved'|'quota'|'invalid'}
+ */
+export function propose_alias(raw, card_id, user_id) {
+	const norm = normalize(raw);
+	if (!norm || !Number.isInteger(card_id))
+		return 'invalid';
+
+	const existing = stmt_status.get(norm, card_id);
+	if (existing?.status === 'approved')
+		return 'approved';
+	if (existing?.status === 'proposed')
+		return 'exists';
+	if (!quota_ok(user_id))
+		return 'quota';
+
+	stmt_propose.run(norm, card_id, raw, String(user_id), Date.now());
+	return 'ok';
+}
+
+/** 待審提案。 */
+export function list_proposals(limit = 15) {
+	return stmt_list_proposed.all(limit);
+}
+
+/** 核准一條提案，並立刻進索引。 */
+export function approve_proposal(rowid) {
+	const row = stmt_by_rowid.get(rowid);
+	if (!row || row.status !== 'proposed')
+		return null;
+	stmt_set_status_rowid.run(rowid);
+	add(row.norm, row.card_id, row.raw, 'community');
+	return row;
+}
+
+/** 退掉一條提案。直接刪 —— 這張表是索引，不是稽核軌跡。 */
+export function reject_proposal(rowid) {
+	const row = stmt_by_rowid.get(rowid);
+	if (!row || row.status !== 'proposed')
+		return null;
+	stmt_delete_rowid.run(rowid);
+	return row;
+}
