@@ -1,0 +1,49 @@
+# query-bot —— Raspberry Pi 5 部署
+#
+#   啟動：docker compose --env-file .env -f docker-compose.pi.yml up -d --build
+#   日誌：docker compose -f docker-compose.pi.yml logs -f
+#
+# 跟 RestForFoodie 的 docker-compose.pi.yml 比，這裡刻意少了很多東西：
+# 沒有 ports、沒有資料庫、沒有 Caddy。gateway 是對外連線，卡表是
+# SQLite 檔，所以整套就一個容器。
+
+services:
+  bot:
+    build: .
+    image: ygo_bot:local
+    container_name: ygo_bot
+    restart: unless-stopped
+
+    environment:
+      TOKEN:     ${TOKEN:?請在 .env 設定 TOKEN}
+      CLIENT_ID: ${CLIENT_ID:?請在 .env 設定 CLIENT_ID}
+      GUILD_ID:  ${GUILD_ID:?請在 .env 設定 GUILD_ID}
+      ADMIN:     ${ADMIN:?請在 .env 設定 ADMIN}
+
+      # ⚠️ 沒設的話容器是 UTC，log 與裁定日期會跟你看到的差八小時。
+      # 這條跟語言無關，RestForFoodie 踩過。
+      TZ: Asia/Taipei
+
+    volumes:
+      # cards.cdb 由 bot 自己從上游 Release 下載，但**不要讓它留在容器裡** ——
+      # 每次 rebuild 都重抓是沒必要的請求，而且重啟就掉快取。
+      #
+      # 用 bind mount 指向 SSD，理由同 RestForFoodie：一眼看得出資料在哪顆碟。
+      # ${SSD_MOUNT:?...} 讓變數沒設時直接失敗 —— 用 ${SSD_MOUNT} 的話
+      # 空值會變成 /ygo/db（host 根目錄），Docker 會安靜地建立它。
+      - ${SSD_MOUNT:?請在 .env 設定 SSD_MOUNT，例如 /mnt/ssd}/ygo/db:/app/db
+
+    # 不限制的話 log 會慢慢吃掉儲存空間
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    # Pi 5 的 4GB 要分給既有的五個容器，這支只是個 Node 行程，
+    # 給上限是為了它出問題時不要把整台拖下水。
+    mem_limit: 512m
+
+# ⚠️ 部署腳本不要寫成「每次都 docker compose restart」。
+#    gateway 重啟要重新 identify，而 Discord 對 identify 有每日上限。
+#    只在程式碼真的變了的時候才重建重啟。
