@@ -1,6 +1,6 @@
 import { SlashCommandBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } from 'discord.js';
 import { get_card } from '../ygo-query.mjs';
-import { suggest, resolve_id } from '../ygo-alias.mjs';
+import { suggest, resolve_id, display_name } from '../ygo-alias.mjs';
 import {
 	cache_state, get_rulings, get_common_rulings,
 	fetch_rulings, ensure_detail, qa_link, breaker_state,
@@ -92,7 +92,7 @@ function qa_buttons(cards) {
 	for (const card of cards) {
 		row.addComponents(new ButtonBuilder()
 			.setStyle(ButtonStyle.Link)
-			.setLabel(`官方 Q&A：${clip(card.text?.name ?? String(card.id), 60)}`)
+			.setLabel(`官方 Q&A：${clip(display_name(card.id), 60)}`)
 			.setURL(qa_link(card.cid))
 		);
 	}

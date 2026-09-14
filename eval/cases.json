@@ -1,0 +1,87 @@
+{
+  "_說明": "評測集。動 prompt 之前先跑這個，否則改完不知道是變好還變壞。",
+  "_跑法": "docker compose -f docker-compose.dev.yml exec -T bot node eval/run.mjs",
+  "_第一次": "加 --fetch 讓沒快取的題目去抓一次。之後都吃快取，不會再連外。",
+
+  "_題型": {
+    "alias": "卡名解析。input 是使用者打的字，expect 是該解析到誰，或該呈現歧義",
+    "intersect": "兩張卡的共同裁定。expect.fids 是必須出現的官方 Q&A 編號",
+    "empty": "⚠️ 最重要的一類：查無裁定時有沒有誠實說查不到，而不是自己推論"
+  },
+
+  "_還缺的": "流程／時點題（第 4 階段才測得到，需要規則語料接上）。那類題目的標準答案要由懂規則的人寫——不要讓模型自己生。",
+
+  "cases": [
+    {
+      "id": "alias-tw-substring",
+      "kind": "alias",
+      "input": "灰流",
+      "expect": { "name": "灰流麗" },
+      "why": "官方繁中名的子字串，上游 LIKE 本來就吃得到。這題是回歸保險"
+    },
+    {
+      "id": "alias-ja-hiragana",
+      "kind": "alias",
+      "input": "うらら",
+      "expect": { "name": "灰流麗" },
+      "why": "日文名在 choice_table.ja，合併 locale 之後才查得到"
+    },
+    {
+      "id": "alias-ja-katakana",
+      "kind": "alias",
+      "input": "ウララ",
+      "expect": { "name": "灰流麗" },
+      "why": "片假名折成平假名的正規化"
+    },
+    {
+      "id": "alias-slang-jp-kanji",
+      "kind": "alias",
+      "input": "増G",
+      "expect": { "name": "增殖的G" },
+      "why": "社群俗稱，日式「増」。不是任何官方名稱的子字串"
+    },
+    {
+      "id": "alias-slang-tw-kanji",
+      "kind": "alias",
+      "input": "增G",
+      "expect": { "name": "增殖的G" },
+      "why": "同上，中式「增」。使用者兩種都會打"
+    },
+    {
+      "id": "alias-en",
+      "kind": "alias",
+      "input": "ash blossom",
+      "expect": { "name": "灰流麗" },
+      "why": "英文名，合併 en locale 的附帶效果"
+    },
+    {
+      "id": "alias-ambiguous",
+      "kind": "alias",
+      "input": "墓穴",
+      "expect": { "ambiguous": true, "candidates_include": ["墓穴的指名者"], "min_candidates": 2 },
+      "why": "⚠️ 歧義必須呈現而不是亂猜。resolve 要回 null，候選裡要有正確的那張"
+    },
+    {
+      "id": "alias-nonsense",
+      "kind": "alias",
+      "input": "這不是一張卡的名字",
+      "expect": { "none": true },
+      "why": "亂打不能誤命中"
+    },
+
+    {
+      "id": "intersect-blueeyes-yashiki",
+      "kind": "intersect",
+      "cards": ["青眼の白龍", "屋敷わらし"],
+      "expect": { "fids": [23215] },
+      "why": "實測驗證過的交集。官方 Q&A 23215 同時掛在這兩張卡上"
+    },
+    {
+      "id": "intersect-not-polluted",
+      "kind": "intersect",
+      "cards": ["青眼の白龍", "屋敷わらし"],
+      "expect": { "max_results": 5 },
+      "why": "⚠️ 回歸測試：若哪天又把「答案文字裡提到的卡」拿去建關聯，這題會爆——有一條裁定的回答列了 134 張卡"
+    }
+  ]
+}
