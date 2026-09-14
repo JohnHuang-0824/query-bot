@@ -12,9 +12,16 @@ FROM node:26-slim
 # 版本不符時在 build 階段就炸掉，而不是跑起來才出怪事。
 RUN node -e "if (process.versions.node.split('.')[0] < 26) { console.error('need Node >= 26'); process.exit(1); }"
 
-# lockfile 是 pnpm 的，用 corepack 裝對應版本，不要改用 npm ——
-# 換套件管理器會產生不同的依賴樹，而那不是我們想在 Pi 上除錯的東西。
-RUN corepack enable
+# lockfile 是 pnpm 的，不要改用 npm —— 換套件管理器會產生不同的依賴樹，
+# 而那不是我們想在 Pi 上除錯的東西。
+#
+# ⚠️ 不能用 corepack：**Node 25 起就不再內建它**，node:26-slim 裡沒有
+#    corepack 這個執行檔，症狀是 build 掛在 `corepack: not found`。
+#    所以直接用 npm 裝 pnpm。
+#
+# 版本釘 9 是為了對上 pnpm-lock.yaml 的 lockfileVersion: '9.0' ——
+# 搭配下面的 --frozen-lockfile，版本對不上會直接失敗，而不是默默改寫鎖定。
+RUN npm install -g pnpm@9 --no-fund --no-audit
 
 WORKDIR /app
 
