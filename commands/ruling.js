@@ -1,6 +1,6 @@
 import { SlashCommandBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } from 'discord.js';
-import { autocomplete_default, choice_table } from '../common_all.js';
 import { get_card } from '../ygo-query.mjs';
+import { suggest, resolve_id } from '../ygo-alias.mjs';
 import {
 	cache_state, get_rulings, get_common_rulings,
 	fetch_rulings, ensure_detail, qa_link, breaker_state,
@@ -43,19 +43,22 @@ export const data = new SlashCommandBuilder()
 data.integration_types = [0, 1];
 data.contexts = [0, 1, 2];
 
-// autocomplete_default 吃的是「目前聚焦的那個選項」，所以 card1 / card2
-// 共用同一個 handler，不必分辨是哪一個。
+// 兩個選項共用同一個 handler —— getFocused() 給的就是目前聚焦的那個，
+// 不必分辨是 card1 還是 card2。
+//
+// ⚠️ 用自己的 suggest() 而不是上游的 autocomplete_default：它只吃單一
+//    locale，而老手問裁定時中日混用，還會用社群俗稱。上游 /card 的行為
+//    維持原樣（fork 規矩 5）。
 export async function autocomplete(interaction) {
-	await autocomplete_default(interaction, 'full');
+	await interaction.respond(suggest(interaction.options.getFocused()));
 }
 
+// autocomplete 的 value 是卡片 id，所以正常流程是直接命中；使用者硬打
+// 文字時才走別名索引，而且只有唯一命中才認 —— 有歧義就回 null，讓上層
+// 請他從候選裡選。
 function resolve_card(input) {
-	if (!input)
-		return null;
-	const table = choice_table['full'];
-	if (!table || !table.has(input))
-		return null;
-	return get_card(table.get(input)) ?? null;
+	const id = resolve_id(input);
+	return id === null ? null : (get_card(id) ?? null);
 }
 
 function faq_url(fid) {
