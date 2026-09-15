@@ -195,6 +195,53 @@ git add alias-seed.json && git commit -m "更新別名表"
 
 ---
 
+## 四之三、⚠️ 卡表更新：每天重啟一次
+
+**卡表只在啟動時下載**（`ygo-query.mjs` 的 `reload_db()`，上游標注
+`//workaround`）。整個專案沒有任何排程 —— 不重啟就永遠停在部署那天的卡表，
+而老手問的正是新卡。
+
+### 為什麼不用「程式內定期重載」
+
+`reload_db()` 有匯出，但它只更新 SQLite 檔與內部 statement。
+autocomplete 與別名索引實際用的 `choice_table` 是 `refresh_choice_table()`
+建的，**而那支沒有匯出**。只重載一半會造成不一致：卡表有新卡、名稱索引
+沒有 —— 查得到 id 卻查不到名字，比不更新更糟。
+
+要匯出它就得改 `common_all.js`，違反 fork 規矩 2。所以走重啟。
+
+### 設定
+
+```bash
+crontab -e
+```
+
+```cron
+# 每天 05:10 重啟 bot，順便更新卡表
+10 5 * * * cd /home/<使用者>/query-bot && /usr/bin/docker compose -f docker-compose.pi.yml restart bot >> /tmp/ygo-restart.log 2>&1
+```
+
+⚠️ **這跟「部署腳本不要每次都 restart」不衝突。** Discord 的 identify
+每日上限是千次等級，一天一次毫無影響；要避免的是「每次改程式碼就重啟」
+那種頻率。
+
+重啟會重新下載卡表、重建 `choice_table` 與別名索引。⚠️ 規則語料、裁定快取、
+別名表都在 SQLite 裡，**不會因為重啟而遺失**。
+
+### 規則語料要自己記得更新
+
+`import-rules.mjs` 是手動的。OCG Rule 的維護者每週都在加 FAQ 引用，所以
+大約每月跑一次：
+
+```bash
+docker compose -f docker-compose.pi.yml exec -T bot node scripts/import-rules.mjs
+```
+
+（這支沒有排程是因為它只是一次 GitHub tarball 下載，不像 Konami 那邊有
+使用條款的量的限制 —— 想排程也可以，只是沒必要。）
+
+---
+
 ## 五、跟上游同步
 
 ```bash
