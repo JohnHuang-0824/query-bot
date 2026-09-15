@@ -36,6 +36,38 @@
   ],
   "cases": [
     {
+      "id": "refuse-blueeyes-maxxc",
+      "kind": "refuse",
+      "cards": [
+        "青眼の白龍",
+        "増殖するG"
+      ],
+      "expect": {
+        "must_refuse": true
+      },
+      "why": "這兩張卡各自都有裁定（88 / 35 條）但沒有共同的。必須誠實說查不到，不能因為兩邊都有資料就硬湊一個答案。這是拒答題的標準形狀，照這個改"
+    },
+    {
+      "id": "rules-EXAMPLE-請改寫或刪除",
+      "kind": "rules",
+      "draft": true,
+      "question": "（在這裡寫一個真的有人會問的流程題）",
+      "expect": {
+        "cites": [
+          "（該引用到的 OCG Rule 章節名）"
+        ],
+        "must_not_contain": [
+          "一般來說",
+          "應該是",
+          "推測",
+          "我認為"
+        ],
+        "max_chars": 1200
+      },
+      "gold": "（在這裡寫標準答案。跑測不會自動比對，只印出來給你對照）",
+      "why": "（這題在測什麼）"
+    },
+    {
       "id": "refuse-EXAMPLE-請改寫或刪除",
       "kind": "refuse",
       "draft": true,
