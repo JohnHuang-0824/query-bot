@@ -102,6 +102,21 @@ SSD_MOUNT=/mnt/ssd
 放大**。我們這裡雖然只有一個 SQLite 檔、寫入量小得多，但既然 SSD 已經
 掛著，沒有理由讓 `cards.cdb` 留在 SD 卡上。
 
+⚠️ **掛載目錄的擁有者要先改成 uid 1000，否則一定起不來。**
+
+```bash
+mkdir -p ${SSD_MOUNT}/ygo/db
+sudo chown -R 1000:1000 ${SSD_MOUNT}/ygo/db
+```
+
+Dockerfile 裡雖然有 `chown -R node:node /app/db`，但**那是 build 時做的**。
+執行時 bind mount 會把主機目錄蓋上去，容器內看到的是主機的擁有者。
+`mkdir` 出來的目錄通常屬於 root，而容器以 `node`（uid 1000）執行 ——
+於是 SQLite 建不出檔案、行程崩潰、`restart: unless-stopped` 讓它無限重來。
+
+症狀是**容器一直重啟、`exec` 進不去**，日誌裡是
+`EACCES: permission denied, open '/app/db/pre.cdb'`。
+
 ```bash
 docker compose --env-file .env -f docker-compose.pi.yml up -d --build
 docker compose -f docker-compose.pi.yml logs -f

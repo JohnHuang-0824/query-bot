@@ -36,6 +36,9 @@ services:
       # 用 bind mount 指向 SSD，理由同 RestForFoodie：一眼看得出資料在哪顆碟。
       # ${SSD_MOUNT:?...} 讓變數沒設時直接失敗 —— 用 ${SSD_MOUNT} 的話
       # 空值會變成 /ygo/db（host 根目錄），Docker 會安靜地建立它。
+      # ⚠️ 這個目錄必須先 chown 成 uid 1000（容器裡的 node 使用者），
+      #    否則行程起不來。Dockerfile 的 chown 是 build 時做的，執行時
+      #    會被 bind mount 蓋掉。見 README_部署.md 第二節。
       - ${SSD_MOUNT:?請在 .env 設定 SSD_MOUNT，例如 /mnt/ssd}/ygo/db:/app/db
 
     # 不限制的話 log 會慢慢吃掉儲存空間
