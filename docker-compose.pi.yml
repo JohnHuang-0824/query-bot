@@ -20,6 +20,11 @@ services:
       GUILD_ID:  ${GUILD_ID:?請在 .env 設定 GUILD_ID}
       ADMIN:     ${ADMIN:?請在 .env 設定 ADMIN}
 
+      # 第 4 階段的繁中解釋層。
+      # ⚠️ 要另開 Google Cloud 專案，不要跟其他專案共用免費層配額。
+      GEMINI_API_KEY: ${GEMINI_API_KEY:?請在 .env 設定 GEMINI_API_KEY}
+      GEMINI_MODEL:   ${GEMINI_MODEL:-gemini-3-flash}
+
       # ⚠️ 沒設的話容器是 UTC，log 與裁定日期會跟你看到的差八小時。
       # 這條跟語言無關，RestForFoodie 踩過。
       TZ: Asia/Taipei
