@@ -16,6 +16,7 @@
 
 import { DatabaseSync } from 'node:sqlite';
 import { print_qa_link } from './ygo-utility.mjs';
+import { blocked_reason, wait_ms, record, stats } from './ygo-throttle.mjs';
 
 const BASE = 'https://www.db.yugioh-card.com/yugiohdb/faq_search.action';
 
@@ -173,30 +174,18 @@ export function qa_link(cid) {
 
 // ---------------------------------------------------------------- 節流
 
-let last_request_at = 0;
-let minute_window = [];
-let day_count = 0;
-let day_started_at = Date.now();
-let tripped_reason = null;
-
-/** 熔斷狀態。命令列層可以用它決定要不要提示降級。 */
+/**
+ * 熔斷狀態。
+ * ⚠️ 計數存在資料庫而不是記憶體 —— 這是合規要求，不能因為換一個行程
+ *    就重新開始。見 ygo-throttle.mjs。
+ */
 export function breaker_state() {
-	return { tripped: !!tripped_reason, reason: tripped_reason, day_count };
+	const reason = blocked_reason('konami', { per_minute: RATE.PER_MINUTE, per_day: RATE.PER_DAY });
+	return { tripped: !!reason, reason, ...stats('konami') };
 }
 
 function check_breaker() {
-	const now = Date.now();
-	if (now - day_started_at > 24 * 60 * 60 * 1000) {
-		day_started_at = now;
-		day_count = 0;
-		tripped_reason = null;
-	}
-	if (day_count >= RATE.PER_DAY)
-		return (tripped_reason = `每日上限 ${RATE.PER_DAY}`);
-	minute_window = minute_window.filter(t => now - t < 60_000);
-	if (minute_window.length >= RATE.PER_MINUTE)
-		return `每分鐘上限 ${RATE.PER_MINUTE}`;
-	return null;
+	return blocked_reason('konami', { per_minute: RATE.PER_MINUTE, per_day: RATE.PER_DAY });
 }
 
 /**
@@ -209,13 +198,11 @@ async function polite_fetch(url) {
 		console.warn(`[ruling] 熔斷：${blocked}，改走降級模式`);
 		return null;
 	}
-	const wait = RATE.MIN_INTERVAL_MS - (Date.now() - last_request_at);
+	const wait = wait_ms('konami', RATE.MIN_INTERVAL_MS);
 	if (wait > 0)
 		await new Promise(r => setTimeout(r, wait));
-
-	last_request_at = Date.now();
-	minute_window.push(last_request_at);
-	day_count++;
+	// ⚠️ 發出前就記，失敗的請求對方一樣算。
+	record('konami');
 
 	const res = await fetch(url, { headers: { 'User-Agent': USER_AGENT } });
 	if (!res.ok) {

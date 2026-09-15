@@ -12,6 +12,7 @@
  */
 
 import { DatabaseSync } from 'node:sqlite';
+import { blocked_reason, wait_ms, record, stats } from './ygo-throttle.mjs';
 
 const BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
 const MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
@@ -22,10 +23,12 @@ const KEY = process.env.GEMINI_API_KEY;
  *    這裡刻意抓得比官方數字保守 —— 撞到 429 的代價是使用者等不到回答，
  *    而慢一點只是慢一點。
  */
+// 官方免費層（gemini-2.5-flash）：RPM 15、RPD 1500、TPM 100 萬。
+// 自訂值刻意壓在官方之下留餘裕 —— 撞到 429 的代價是使用者等不到回答。
 const RATE = {
 	MIN_INTERVAL_MS: 1500,
-	PER_MINUTE: 8,
-	PER_DAY: 400,
+	PER_MINUTE: 10,
+	PER_DAY: 1200,
 	MAX_RETRY: 2,
 };
 
@@ -53,21 +56,7 @@ function today() {
 
 /** 近幾天的用量。⚠️ 這不是儀表板，是「撞到上限時知道為什麼」的最低限度。 */
 export function usage(days = 7) {
-	return stmt_usage.all(days);
-}
-
-let last_at = 0;
-let minute_window = [];
-
-function throttle_reason() {
-	const now = Date.now();
-	minute_window = minute_window.filter(t => now - t < 60_000);
-	if (minute_window.length >= RATE.PER_MINUTE)
-		return `每分鐘上限 ${RATE.PER_MINUTE}`;
-	const row = stmt_usage.all(1)[0];
-	if (row?.day === today() && row.calls >= RATE.PER_DAY)
-		return `每日上限 ${RATE.PER_DAY}`;
-	return null;
+	return { days: stmt_usage.all(days), window: stats('gemini') };
 }
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -85,7 +74,7 @@ export async function generate(prompt, opts = {}) {
 	if (!KEY)
 		return { error: 'GEMINI_API_KEY 沒設' };
 
-	const blocked = throttle_reason();
+	const blocked = blocked_reason('gemini', { per_minute: RATE.PER_MINUTE, per_day: RATE.PER_DAY });
 	if (blocked)
 		return { error: `節流：${blocked}` };
 
@@ -106,11 +95,11 @@ export async function generate(prompt, opts = {}) {
 	};
 
 	for (let attempt = 0; attempt <= RATE.MAX_RETRY; attempt++) {
-		const wait = RATE.MIN_INTERVAL_MS - (Date.now() - last_at);
+		const wait = wait_ms('gemini', RATE.MIN_INTERVAL_MS);
 		if (wait > 0)
 			await sleep(wait);
-		last_at = Date.now();
-		minute_window.push(last_at);
+		// ⚠️ 發出前就記。失敗的請求對方一樣算，我們也要算。
+		record('gemini');
 
 		let res;
 		try {
