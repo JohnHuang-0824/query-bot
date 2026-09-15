@@ -58,9 +58,9 @@ export async function execute(interaction) {
 		await interaction.editReply(`你問得有點快（${over}）。稍後再試。`);
 		return;
 	}
+	const question = interaction.options.getString('question').trim();
 	record(key);
 
-	const question = interaction.options.getString('question').trim();
 	const r = await answer_question(question);
 
 	if (r.error && !r.answer) {
@@ -70,7 +70,11 @@ export async function execute(interaction) {
 
 	const sources = source_lines(r);
 	const head = r.refused ? '🔸 **查無足夠依據**' : '';
+	// 把問題一起顯示。slash command 的參數在不同客戶端顯示方式不一，長問題
+	// 還會被截斷 —— 而這種回答常常被截圖轉貼，沒有問題就看不懂在答什麼。
+	const asked = `> ${clip(question, 260).split(String.fromCharCode(10)).join(' ')}`;
 	const body = [
+		asked,
 		head,
 		r.answer,
 		sources.length ? `\n**出處**\n${sources.join('\n')}` : '',
