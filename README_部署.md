@@ -160,6 +160,26 @@ ygo-ruling.mjs         ← 新增
 
 ---
 
+## 四之二、⚠️ 別名表要定期匯出
+
+`db/ruling.db` 在 `.gitignore` 裡（裡面有快取的官方裁定，不能進版控），
+而且只存在於那台機器的 SSD 上。**碟掛了，社群累積的俗稱就全沒了。**
+
+別名表是架構決策第一節說的「唯一會隨時間增值的資產」，所以要定期撈回
+可進版控的格式：
+
+```bash
+docker compose -f docker-compose.pi.yml exec -T bot node scripts/export-aliases.mjs > alias-seed.json
+git add alias-seed.json && git commit -m "更新別名表"
+```
+
+⚠️ 只匯出俗稱，**不匯出快取的裁定** —— 那是別人的內容，我們承諾過不
+轉散布。
+
+核准幾筆新俗稱之後就跑一次。這是唯一會後悔沒做的維運工作。
+
+---
+
 ## 五、跟上游同步
 
 ```bash
