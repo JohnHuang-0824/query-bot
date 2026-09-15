@@ -15,8 +15,17 @@ import { readFileSync } from 'node:fs';
 import { suggest, resolve_id, display_name } from '../ygo-alias.mjs';
 import { get_card } from '../ygo-query.mjs';
 import { cache_state, fetch_rulings, get_common_rulings } from '../ygo-ruling.mjs';
+import { answer_question } from '../ygo-answer.mjs';
+import { get_section } from '../ygo-rules.mjs';
 
 const ALLOW_FETCH = process.argv.includes('--fetch');
+
+// ⚠️ 呼叫模型要明確開啟。一輪 15 題就是 30 次 Gemini 呼叫，加上節流至少
+//    四五分鐘，還吃免費層配額。預設只跑不花錢的結構檢查，這樣「改完跑一下」
+//    才會真的變成習慣 —— 要錢又要等的檢查，人就不會跑。
+const ALLOW_LLM = process.argv.includes('--llm');
+const ONLY = (process.argv.find(a => a.startsWith('--only=')) ?? '').slice(7);
+const answers = [];
 const spec = JSON.parse(readFileSync(new URL('./cases.json', import.meta.url), 'utf8'));
 const rules_spec = JSON.parse(readFileSync(new URL('./rules-cases.json', import.meta.url), 'utf8'));
 const all_cases = [...spec.cases, ...rules_spec.cases];
@@ -113,7 +122,7 @@ async function run_refuse(c) {
 	//    形狀只是它的代理指標。所以第 4 階段一定要把 question 那條路做完，
 	//    不要因為 cards 那條有在跑就以為測到了。
 	if (!c.cards)
-		return skip(c, c.question ? '待第 4 階段（要檢查回覆文字）' : '既沒有 cards 也沒有 question');
+		return c.question ? run_rules(c) : skip(c, '既沒有 cards 也沒有 question');
 
 	const ids = c.cards.map(n => resolve_id(n));
 	if (ids.some(x => x === null))
@@ -143,12 +152,54 @@ async function run_refuse(c) {
  *    **不要假裝通過**。一個永遠綠燈的測試比沒有測試更危險。
  */
 async function run_rules(c) {
-	return skip(c, '待第 4 階段（規則語料尚未接上）');
+	if (!ALLOW_LLM)
+		return skip(c, '需要 --llm（會呼叫 Gemini）');
+
+	const r = await answer_question(c.question, { allow_fetch: ALLOW_FETCH });
+	if (r.error)
+		return skip(c, `作答失敗：${r.error}`);
+
+	answers.push({ id: c.id, question: c.question, gold: c.gold, r });
+
+	const e = c.expect ?? {};
+	const bad = [];
+
+	if (e.must_refuse === true && !r.refused)
+		bad.push('預期拒答，實際給了結論');
+	if (e.must_refuse === false && r.refused)
+		bad.push('不該拒答卻拒答了');
+
+	for (const w of e.must_not_contain ?? []) {
+		if (r.answer.includes(w))
+			bad.push(`出現禁用字眼「${w}」`);
+	}
+	for (const w of e.must_contain ?? []) {
+		if (!r.answer.includes(w))
+			bad.push(`缺少必要內容「${w}」`);
+	}
+	if (e.max_chars && r.answer.length > e.max_chars)
+		bad.push(`回答 ${r.answer.length} 字，超過上限 ${e.max_chars}`);
+
+	// 期望引用到的章節：比對實際引用章節的路徑
+	const paths = r.rule_ids.map(id => get_section(id)?.path ?? '').join(' | ');
+	for (const want of e.cites ?? []) {
+		if (!paths.includes(want))
+			bad.push(`沒引用到「${want}」，實際引用：${paths || '無'}`);
+	}
+
+	// ⚠️ 模型編造引用是重大缺陷，不是小瑕疵 —— 管線雖然已經把它丟掉了，
+	//    但它發生過這件事本身就要讓這題紅燈。
+	if (r.dropped?.length)
+		bad.push(`模型編造了引用：${r.dropped.join(' ')}`);
+
+	return check(c, bad.length === 0, bad.join('；'));
 }
 
 console.log(`評測集：${all_cases.length} 題${ALLOW_FETCH ? '（允許連外抓取）' : '（純快取，不連外）'}\n`);
 
 for (const c of all_cases) {
+	if (ONLY && !c.id.includes(ONLY))
+		continue;
 	if (c.draft) {
 		results.draft++;
 		continue;
@@ -193,6 +244,19 @@ if (manual_review.length) {
 			console.log(`    問：${c.question}`);
 		if (c.gold)
 			console.log(`    標準答案：${c.gold}`);
+	}
+}
+
+if (answers.length) {
+	console.log('');
+	console.log('=== 回答內容（跟 gold 對照，機器判不了這部分）===');
+	for (const a of answers) {
+		console.log(`--- ${a.id}`);
+		console.log(`  問  ${a.question}`);
+		console.log(`  答  ${a.r.answer.split(String.fromCharCode(10)).join(' ')}`);
+		console.log(`  引用 規則[${a.r.rule_ids.join(',') || '無'}] 裁定[${a.r.ruling_fids.join(',') || '無'}] 拒答=${a.r.refused}`);
+		if (a.gold)
+			console.log(`  gold ${a.gold.split(String.fromCharCode(10)).join(' ')}`);
 	}
 }
 
