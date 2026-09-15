@@ -198,3 +198,14 @@ export function collect_sections(ids, budget = 24000) {
 	}
 	return out;
 }
+
+/**
+ * 章節在 Read the Docs 上的網址。
+ *
+ * 檔名 `c02/基本用语.rst` 對應 `…/zh-cn/latest/c02/基本用语.html`。
+ * ⚠️ 不加錨點 —— Sphinx 給中文標題產生的 anchor 規則不穩定，連錯比不連更糟。
+ */
+export function section_url(file) {
+	const path = String(file).replace(/[.]rst$/, '.html');
+	return `https://ocg-rule.readthedocs.io/zh-cn/latest/${path.split('/').map(encodeURIComponent).join('/')}`;
+}
