@@ -145,6 +145,11 @@ export function cache_state(cid) {
 	};
 }
 
+/** 用 fid 取單條裁定（含全文，若已抓過明細）。 */
+export function get_ruling(fid) {
+	return stmt_get_ruling.get(fid) ?? null;
+}
+
 /** 讀快取裡某張卡的裁定。不會觸發抓取。 */
 export function get_rulings(cid) {
 	return stmt_by_cid.all(cid);

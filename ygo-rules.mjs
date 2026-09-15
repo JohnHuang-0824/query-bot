@@ -78,6 +78,27 @@ function clean_title(t) {
 		.trim();
 }
 
+
+/**
+ * 清掉內文的 reStructuredText 標記。
+ *
+ * ⚠️ 內文會**原樣送進模型、也會出現在使用者看到的回答裡**，所以標記
+ *    不只是雜訊，是會漏到畫面上的東西。實測第一版就出現過
+ *    「`大宇宙`_」這種東西直接印在回答中。
+ *
+ * 保守處理：只拆連結語法與跳脫，不動內容本身。
+ */
+function clean_body(t) {
+	return t
+		.replace(/`([^`]*)`_?/g, '$1')
+		.replace(/\\s?/g, '')
+		.replace(/\*\*([^*]*)\*\*/g, '$1')
+		.replace(/^[ \t]*\|[ \t]?/gm, '')
+		.replace(/^\.\.[ \t]+\w+::[ \t]*/gm, '')
+		.replace(/\n{3,}/g, '\n\n')
+		.trim();
+}
+
 /**
  * 把一份 .rst 切成章節。
  *
@@ -111,7 +132,7 @@ export function parse_rst(text, file) {
 	for (let k = 0; k < marks.length; k++) {
 		const m = marks[k];
 		const end = k + 1 < marks.length ? marks[k + 1].line : lines.length;
-		const body = lines.slice(m.line + 2, end).join('\n').trim();
+		const body = clean_body(lines.slice(m.line + 2, end).join('\n'));
 
 		stack.length = m.level - 1;
 		stack[m.level - 1] = m.title;
