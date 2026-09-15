@@ -105,6 +105,16 @@ async function run_intersect(c) {
  *    最想幫忙，也最容易把推論講成事實。
  */
 async function run_refuse(c) {
+	// 拒答題有兩種形狀：
+	//   cards  兩張卡 —— 檢查檢索層是否回空，現在就跑得動
+	//   question 一個問題 —— 要檢查真正的回覆文字，第 4 階段才跑得動
+	//
+	// ⚠️ question 形狀才是真正在測的東西（使用者看到的行為），cards
+	//    形狀只是它的代理指標。所以第 4 階段一定要把 question 那條路做完，
+	//    不要因為 cards 那條有在跑就以為測到了。
+	if (!c.cards)
+		return skip(c, c.question ? '待第 4 階段（要檢查回覆文字）' : '既沒有 cards 也沒有 question');
+
 	const ids = c.cards.map(n => resolve_id(n));
 	if (ids.some(x => x === null))
 		return skip(c, `卡名解析不到：${c.cards.filter((_, i) => ids[i] === null)}`);
@@ -148,16 +158,24 @@ for (const c of all_cases) {
 		manual_review.push(c);
 		continue;
 	}
-	if (c.kind === 'alias')
-		await run_alias(c);
-	else if (c.kind === 'intersect' || c.kind === 'empty')
-		await run_intersect(c);
-	else if (c.kind === 'refuse')
-		await run_refuse(c);
-	else if (c.kind === 'rules')
-		await run_rules(c);
-	else
-		skip(c, `未知題型 ${c.kind}`);
+	try {
+		if (c.kind === 'alias')
+			await run_alias(c);
+		else if (c.kind === 'intersect' || c.kind === 'empty')
+			await run_intersect(c);
+		else if (c.kind === 'refuse')
+			await run_refuse(c);
+		else if (c.kind === 'rules')
+			await run_rules(c);
+		else
+			skip(c, `未知題型 ${c.kind}`);
+	}
+	catch (err) {
+		// 跑測器不該因為一題寫壞就整輪停掉 —— 那樣後面的題目全部看不到。
+		results.fail++;
+		failures.push({ id: c.id, detail: `跑測時丟出例外：${err.message}`, why: c.why });
+		console.log(`  ✗ ${c.id} —— 例外：${err.message}`);
+	}
 }
 
 console.log(`
