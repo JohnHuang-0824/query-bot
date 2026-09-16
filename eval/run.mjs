@@ -155,7 +155,7 @@ async function run_rules(c) {
 	if (!ALLOW_LLM)
 		return skip(c, '需要 --llm（會呼叫 Gemini）');
 
-	const r = await answer_question(c.question, { allow_fetch: ALLOW_FETCH });
+	const r = await answer_question(c.question, { allow_fetch: ALLOW_FETCH, wait_for_slot: true });
 	if (r.error)
 		return skip(c, `作答失敗：${r.error}`);
 

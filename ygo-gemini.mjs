@@ -74,7 +74,22 @@ export async function generate(prompt, opts = {}) {
 	if (!KEY)
 		return { error: 'GEMINI_API_KEY 沒設' };
 
-	const blocked = blocked_reason('gemini', { per_minute: RATE.PER_MINUTE, per_day: RATE.PER_DAY });
+	// ⚠️ 撞到每分鐘上限時要「等」還是「失敗」，取決於呼叫端是誰：
+	//    互動中的使用者 → 快速失敗，讓他知道現在忙（等 30 秒更糟）
+	//    批次評測       → 等，否則 30 次呼叫會有大半變成「作答失敗」，
+	//                     而那看起來像模型答不出來，不是節流
+	const limits = { per_minute: RATE.PER_MINUTE, per_day: RATE.PER_DAY };
+	let blocked = blocked_reason('gemini', limits);
+	if (blocked && opts.wait_for_slot) {
+		const deadline = Date.now() + (opts.wait_max_ms ?? 120_000);
+		while (blocked && Date.now() < deadline) {
+			// 每日上限等不到，只有每分鐘的滾動視窗會自己空出來
+			if (blocked.includes('每日'))
+				break;
+			await sleep(5000);
+			blocked = blocked_reason('gemini', limits);
+		}
+	}
 	if (blocked)
 		return { error: `節流：${blocked}` };
 

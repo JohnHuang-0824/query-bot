@@ -99,13 +99,15 @@ ${question}
  */
 export async function answer_question(question, opts = {}) {
 	const allow_fetch = opts.allow_fetch ?? true;
+	// 批次評測時傳 wait_for_slot，讓節流變成等待而不是失敗
+	const gen = { wait_for_slot: opts.wait_for_slot === true };
 	const base = { model: model_name(), rule_ids: [], ruling_fids: [], cards: [] };
 
 	if (!corpus_state().sections)
 		return { ...base, refused: true, answer: '規則語料還沒匯入，無法作答。', error: '語料為空' };
 
 	// --- 第一段：挑章節、抽卡名 ---
-	const sel_res = await generate(SELECT_PROMPT(build_toc(), question), { json: true, max_tokens: 3000 });
+	const sel_res = await generate(SELECT_PROMPT(build_toc(), question), { json: true, max_tokens: 3000, ...gen });
 	if (sel_res.error)
 		return { ...base, refused: true, answer: '目前無法查詢，請稍後再試。', error: sel_res.error };
 
@@ -151,7 +153,7 @@ export async function answer_question(question, opts = {}) {
 	}
 
 	// --- 第二段：作答 ---
-	const ans_res = await generate(ANSWER_PROMPT(question, rules, ruling_ctx), { json: true, max_tokens: 4096 });
+	const ans_res = await generate(ANSWER_PROMPT(question, rules, ruling_ctx), { json: true, max_tokens: 4096, ...gen });
 	if (ans_res.error)
 		return { ...base, cards: resolved, refused: true, answer: '目前無法查詢，請稍後再試。', error: ans_res.error };
 
