@@ -23,7 +23,17 @@ services:
       # 第 4 階段的繁中解釋層。
       # ⚠️ 要另開 Google Cloud 專案，不要跟其他專案共用免費層配額。
       GEMINI_API_KEY: ${GEMINI_API_KEY:?請在 .env 設定 GEMINI_API_KEY}
-      GEMINI_MODEL:   ${GEMINI_MODEL:-gemini-3-flash}
+      # ⚠️ 預設值一度寫成 gemini-3-flash —— **那個名字不存在**（是
+      #    gemini-3-flash-preview）。.env 沒設 GEMINI_MODEL 的話，Pi 上
+      #    每一次 /ask 都會 404，而症狀是「機器人壞了」不是「模型名錯了」。
+      GEMINI_MODEL:   ${GEMINI_MODEL:-gemini-2.5-flash}
+
+      # 速率上限。⚠️ 以 429 回應裡的 quotaValue 為準，不要照文件填 ——
+      # 2026-09-16 實測免費層是每天 20 次（文件寫 1500）。一題兩次呼叫，
+      # 所以全服每天 10 題。開了付費層再往上調，不用改程式。
+      GEMINI_RPD:              ${GEMINI_RPD:-20}
+      GEMINI_RPM:              ${GEMINI_RPM:-10}
+      ASK_PER_USER_PER_DAY:    ${ASK_PER_USER_PER_DAY:-3}
 
       # ⚠️ 沒設的話容器是 UTC，log 與裁定日期會跟你看到的差八小時。
       # 這條跟語言無關，RestForFoodie 踩過。
