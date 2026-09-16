@@ -12,11 +12,14 @@ export const experimental = true;
 /**
  * 每人每日提問上限（架構決策第十二節）。
  *
- * ⚠️ 這不是防濫用的客套話 —— 一題要兩次 Gemini 呼叫，而免費層是每日
- *    1500 次。一個人手滑連問幾十題就能把大家的額度吃掉，而且症狀是
- *    「bot 壞了」不是「你問太多了」。
+ * ⚠️ 這不是防濫用的客套話 —— 一題要兩次 Gemini 呼叫，而實測免費層是
+ *    **每天 20 次請求**（不是文件寫的 1500，見 ygo-gemini.mjs 的註解），
+ *    也就是全服一天只有 10 題。一個人問 4 題就吃掉近一半。
+ *
+ *    數字設 3 是算出來的，不是抓的：3 題 × 2 次 = 6 次，容得下三個人
+ *    在同一天各問滿，還留兩題的餘裕。開了付費層再往上調。
  */
-const PER_USER_PER_DAY = 20;
+const PER_USER_PER_DAY = Number(process.env.ASK_PER_USER_PER_DAY) || 3;
 
 export const data = new SlashCommandBuilder()
 	.setName('ask')

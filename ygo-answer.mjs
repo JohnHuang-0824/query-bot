@@ -66,7 +66,7 @@ ${rulings.length ? rulings.map(r => `[裁定 ${r.fid}] 更新 ${r.updated_at ?? 
 ${question}
 
 請輸出 JSON，不要有其他文字：
-{"refused":布林,"answer":"繁體中文回答","cites":[{"type":"rule","id":數字},{"type":"ruling","fid":數字}]}
+{"refused":布林,"answer":"繁體中文回答","cites":[{"type":"rule","id":數字},{"type":"ruling","id":數字}]}
 
 必須遵守的規則：
 1. **回答用繁體中文**，但引用依據裡的原文時**一字不改地照抄**，不要翻譯、不要改寫。
@@ -171,11 +171,17 @@ export async function answer_question(question, opts = {}) {
 	const dropped = [];
 	const rule_ids = [];
 	const ruling_fids = [];
+	// ⚠️ 編號欄位名要寬容，**允許的編號集合要嚴格**。
+	//    prompt 裡規則用 id、裁定用 fid，模型實測會把兩者都寫成 id ——
+	//    踩過一次：fid 24022（炎王の聖域 × 羽根帚，確實有送進去）被當成
+	//    編造，整個正確的回答被作廢成拒答。認錯欄位名不是編造，只有
+	//    「這個編號我們沒送過」才是。
 	for (const c of cites) {
-		if (c?.type === 'rule' && rule_ok.has(Number(c.id)))
-			rule_ids.push(Number(c.id));
-		else if (c?.type === 'ruling' && ruling_ok.has(Number(c.fid)))
-			ruling_fids.push(Number(c.fid));
+		const n = Number(c?.fid ?? c?.id);
+		if (c?.type === 'rule' && rule_ok.has(n))
+			rule_ids.push(n);
+		else if (c?.type === 'ruling' && ruling_ok.has(n))
+			ruling_fids.push(n);
 		else
 			dropped.push(JSON.stringify(c));
 	}

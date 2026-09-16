@@ -12,23 +12,34 @@
  */
 
 import { DatabaseSync } from 'node:sqlite';
-import { blocked_reason, wait_ms, record, stats } from './ygo-throttle.mjs';
+import { blocked_reason, wait_ms, record, stats, quota_day } from './ygo-throttle.mjs';
 
 const BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
 const MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
 const KEY = process.env.GEMINI_API_KEY;
 
 /**
- * ⚠️ 免費層的限制比你想的緊（Flash 系列大約每分鐘十次等級）。
- *    這裡刻意抓得比官方數字保守 —— 撞到 429 的代價是使用者等不到回答，
- *    而慢一點只是慢一點。
+ * ⚠️ **不要相信文件上的數字，要相信 429 回應裡的數字。**
+ *
+ *    文件寫 gemini-2.5-flash 免費層是 RPM 15 / RPD 1500，我們據此把
+ *    PER_DAY 設成 1200，結果評測跑到一半整批失敗。實際去問對方
+ *    （2026-09-16 實測）拿到的是：
+ *
+ *      quotaId = GenerateRequestsPerDayPerProjectPerModel-FreeTier
+ *      value   = 20
+ *
+ *    **每天 20 次**，不是 1500。差了 75 倍，而且症狀是「模型答不出來」，
+ *    不是「額度用完」—— 因為我們自己的節流永遠不會先跳出來擋。
+ *
+ *    一題要兩次呼叫（選章 + 作答），所以這等於**每天 10 題**。這不是
+ *    調參數能解決的，是產品層級的限制，見架構決策第十二節。
+ *
+ *    用 env 覆寫：開了付費層或換模型之後改 .env，不要改這裡。
  */
-// 官方免費層（gemini-2.5-flash）：RPM 15、RPD 1500、TPM 100 萬。
-// 自訂值刻意壓在官方之下留餘裕 —— 撞到 429 的代價是使用者等不到回答。
 const RATE = {
 	MIN_INTERVAL_MS: 1500,
-	PER_MINUTE: 10,
-	PER_DAY: 1200,
+	PER_MINUTE: Number(process.env.GEMINI_RPM) || 10,
+	PER_DAY: Number(process.env.GEMINI_RPD) || 20,
 	MAX_RETRY: 2,
 };
 
@@ -50,8 +61,10 @@ const stmt_bump = db.prepare(`
 `);
 const stmt_usage = db.prepare('SELECT day, calls, tokens, errors FROM llm_usage ORDER BY day DESC LIMIT ?');
 
+// ⚠️ 用太平洋時間的日期當 key。用 UTC 的話我們的「今天」會橫跨對方
+//    兩個配額日，帳對不起來 —— 實際看到過「今天 27 次」卻撞到 20 次上限。
 function today() {
-	return new Date().toISOString().slice(0, 10);
+	return quota_day();
 }
 
 /** 近幾天的用量。⚠️ 這不是儀表板，是「撞到上限時知道為什麼」的最低限度。 */
@@ -60,6 +73,35 @@ export function usage(days = 7) {
 }
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+/**
+ * 從 429 的回應體挖出「該等多久」與「撞到哪一條配額」。
+ *
+ * ⚠️ 這兩件事對方**有寫在回應裡**，而第一版把整段當純文字截 200 字丟掉了。
+ *    後果是評測跑完只看到「HTTP 429」，分不出撞的是每分鐘還是每日 ——
+ *    前者等一下就好，後者今天不用再跑了，處置完全相反。
+ *
+ *    details 裡會有：
+ *      RetryInfo    { retryDelay: "26s" }
+ *      QuotaFailure { violations: [{ quotaId: "...PerMinutePerProjectPerModel" }] }
+ */
+function parse_429(text) {
+	let delay_ms = 0;
+	const quotas = [];
+	try {
+		for (const d of JSON.parse(text)?.error?.details ?? []) {
+			const m = /^(\d+(?:\.\d+)?)s$/.exec(d.retryDelay ?? '');
+			if (m)
+				delay_ms = Math.round(parseFloat(m[1]) * 1000);
+			for (const v of d.violations ?? []) {
+				if (v.quotaId)
+					quotas.push(v.quotaId);
+			}
+		}
+	}
+	catch { /* 回應不是 JSON 就只能靠預設退避 */ }
+	return { delay_ms, quota: quotas.join('、') };
+}
 
 /**
  * 呼叫 Gemini。
@@ -78,7 +120,7 @@ export async function generate(prompt, opts = {}) {
 	//    互動中的使用者 → 快速失敗，讓他知道現在忙（等 30 秒更糟）
 	//    批次評測       → 等，否則 30 次呼叫會有大半變成「作答失敗」，
 	//                     而那看起來像模型答不出來，不是節流
-	const limits = { per_minute: RATE.PER_MINUTE, per_day: RATE.PER_DAY };
+	const limits = { per_minute: RATE.PER_MINUTE, per_day: RATE.PER_DAY, day_reset: 'pacific' };
 	let blocked = blocked_reason('gemini', limits);
 	if (blocked && opts.wait_for_slot) {
 		const deadline = Date.now() + (opts.wait_max_ms ?? 120_000);
@@ -109,6 +151,7 @@ export async function generate(prompt, opts = {}) {
 		},
 	};
 
+	let last_429 = '';
 	for (let attempt = 0; attempt <= RATE.MAX_RETRY; attempt++) {
 		const wait = wait_ms('gemini', RATE.MIN_INTERVAL_MS);
 		if (wait > 0)
@@ -129,10 +172,24 @@ export async function generate(prompt, opts = {}) {
 			return { error: `連線失敗：${err.message}` };
 		}
 
-		// 429 是免費層最常見的失敗，退避後重試。其他 4xx 重試也沒用。
-		if (res.status === 429 && attempt < RATE.MAX_RETRY) {
-			await sleep(2000 * (attempt + 1));
-			continue;
+		// 429 是免費層最常見的失敗。⚠️ 退避時間要聽對方的，不要自己猜 ——
+		//    每分鐘配額的 retryDelay 常常是 20-60 秒，而第一版只等 2 秒、
+		//    4 秒就放棄，於是三次嘗試在 6 秒內燒掉、還多送兩次請求進去。
+		if (res.status === 429) {
+			const raw = await res.text();
+			const { delay_ms, quota } = parse_429(raw);
+			last_429 = quota || '未指明配額';
+			// 互動中的使用者等不了一分鐘，批次評測可以。
+			const cap = opts.wait_for_slot ? 70_000 : 5_000;
+			const need = delay_ms || 2000 * (attempt + 1);
+			// 要求等的時間超過上限就不重試了 —— 那通常是每日配額，
+			// 硬等下去只是讓使用者多盯著「思考中」而已。
+			if (attempt < RATE.MAX_RETRY && need <= cap) {
+				await sleep(need);
+				continue;
+			}
+			stmt_bump.run(today(), 1, 0, 1);
+			return { error: `HTTP 429（配額：${last_429}）${delay_ms ? `，對方要求等 ${Math.round(delay_ms / 1000)} 秒` : ''}` };
 		}
 		if (!res.ok) {
 			stmt_bump.run(today(), 1, 0, 1);
@@ -156,7 +213,7 @@ export async function generate(prompt, opts = {}) {
 		return { text };
 	}
 	stmt_bump.run(today(), 1, 0, 1);
-	return { error: '重試後仍然失敗（429）' };
+	return { error: `重試後仍然失敗（429${last_429 ? `，配額：${last_429}` : ''}）` };
 }
 
 /** 目前用的模型，寫進回覆的出處資訊用。 */

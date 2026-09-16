@@ -35,16 +35,42 @@ function prune() {
 }
 
 /**
+ * 上一個「太平洋時間午夜」的時間戳。
+ *
+ * ⚠️ Google 免費層的每日配額是**在太平洋時間午夜歸零**，不是滾動 24 小時。
+ *    兩者的差別在額度只有 20 次的時候非常致命：如果我們用滾動視窗計數，
+ *    下午把額度用完之後，對方午夜就補滿了，我們卻要再等到隔天下午才肯
+ *    放行 —— 症狀是「明明還有額度卻一直說超量」。
+ */
+function pacific_day_start() {
+	const now = Date.now();
+	const parts = Object.fromEntries(new Intl.DateTimeFormat('en-CA', {
+		timeZone: 'America/Los_Angeles', hour12: false,
+		hour: '2-digit', minute: '2-digit', second: '2-digit',
+	}).formatToParts(new Date(now)).filter(x => x.type !== 'literal').map(x => [x.type, Number(x.value)]));
+	const into_day = (parts.hour % 24) * 3600 + parts.minute * 60 + parts.second;
+	return now - into_day * 1000;
+}
+
+/** 今天（太平洋時間）的日期字串，用來跟對方的配額對齊。 */
+export function quota_day() {
+	return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Los_Angeles' }).format(new Date());
+}
+
+/**
  * 還能不能發請求。
  * @param {string} source 'gemini' | 'konami'
- * @param {{ per_minute: number, per_day: number }} limits
+ * @param {{ per_minute: number, per_day: number, day_reset?: 'pacific' }} limits
+ *   day_reset: 'pacific' 時每日視窗從太平洋午夜起算（對齊 Google 的配額），
+ *   不給就是滾動 24 小時（Konami 那種自訂的禮貌上限用這個就好）。
  * @returns {string | null} 不能發時回原因
  */
 export function blocked_reason(source, limits) {
 	const now = Date.now();
 	if (stmt_count.get(source, now - 60_000).n >= limits.per_minute)
 		return `每分鐘上限 ${limits.per_minute}`;
-	if (stmt_count.get(source, now - 86_400_000).n >= limits.per_day)
+	const day_from = limits.day_reset === 'pacific' ? pacific_day_start() : now - 86_400_000;
+	if (stmt_count.get(source, day_from).n >= limits.per_day)
 		return `每日上限 ${limits.per_day}`;
 	return null;
 }
@@ -68,5 +94,6 @@ export function stats(source) {
 	return {
 		last_minute: stmt_count.get(source, now - 60_000).n,
 		last_day: stmt_count.get(source, now - 86_400_000).n,
+		since_pacific_midnight: stmt_count.get(source, pacific_day_start()).n,
 	};
 }

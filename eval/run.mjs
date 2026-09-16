@@ -31,6 +31,8 @@ const rules_spec = JSON.parse(readFileSync(new URL('./rules-cases.json', import.
 const all_cases = [...spec.cases, ...rules_spec.cases];
 
 const results = { pass: 0, fail: 0, skip: 0, draft: 0, manual: 0 };
+// 一旦撞到每日配額就記下來，後面的題目直接跳過，不再送請求。
+let quota_dead = '';
 const failures = [];
 const manual_review = [];
 
@@ -154,10 +156,18 @@ async function run_refuse(c) {
 async function run_rules(c) {
 	if (!ALLOW_LLM)
 		return skip(c, '需要 --llm（會呼叫 Gemini）');
+	// ⚠️ 配額用完之後就不要再打了。第一版會把剩下的題目一題一題送進去
+	//    撞 429，於是報表上十幾個「作答失敗」看起來像模型壞掉，實際上
+	//    是同一件事發生了十幾次 —— 而且每一次都真的送了請求出去。
+	if (quota_dead)
+		return skip(c, `今日配額已用完，未呼叫（${quota_dead}）`);
 
 	const r = await answer_question(c.question, { allow_fetch: ALLOW_FETCH, wait_for_slot: true });
-	if (r.error)
+	if (r.error) {
+		if (/429|每日上限/.test(r.error))
+			quota_dead = r.error;
 		return skip(c, `作答失敗：${r.error}`);
+	}
 
 	answers.push({ id: c.id, question: c.question, gold: c.gold, r });
 
@@ -231,6 +241,14 @@ for (const c of all_cases) {
 
 console.log(`
 通過 ${results.pass}　失敗 ${results.fail}　跳過 ${results.skip}　草稿 ${results.draft}　待人工 ${results.manual}`);
+
+if (quota_dead) {
+	console.log(`
+⚠️ 這一輪沒跑完：${quota_dead}
+   免費層是每天 20 次請求、一題兩次呼叫，所以一天最多跑十題。
+   配額在**太平洋時間午夜**歸零（台灣時間下午 3 點或 4 點，看有沒有日光節約）。
+   續跑用 --only=，例如：node eval/run.mjs --llm --fetch --only=rules-00`);
+}
 
 if (results.draft)
 	console.log(`有 ${results.draft} 題還是草稿（draft: true）—— 那些不算數，填好內容後把那一行拿掉。`);
