@@ -145,9 +145,20 @@ export async function answer_question(question, opts = {}) {
 	const ruling_ctx = rulings.slice(0, MAX_RULINGS)
 		.map(r => get_ruling(r.fid) ?? r);
 
+	// ⚠️ 診斷用。配額是每天 20 次，而「為什麼答不出來」幾乎都要看中間
+	//    狀態才知道 —— 選了哪幾節、卡名解析成什麼、送了哪幾條裁定。
+	//    沒有這個就得為了看一眼再燒一輪。設 YGO_DEBUG=1 打開。
+	const debug = {
+		sections: rules.map(r => `${r.id}:${r.path}`),
+		cards: card_names.map(n => `${n}→${resolve_id(n) ?? '解析不到'}`),
+		rulings: ruling_ctx.map(r => `${r.fid}${r.answer ? '' : '（沒全文）'}`),
+	};
+	if (process.env.YGO_DEBUG)
+		console.log(`[ask] 依據：${JSON.stringify(debug, null, 1)}`);
+
 	if (!rules.length && !ruling_ctx.length) {
 		return {
-			...base, cards: resolved, refused: true,
+			...base, cards: resolved, refused: true, debug,
 			answer: '查無可用的依據（規則章節與官方裁定都沒有命中）。這不代表可以自行推論結果 —— 請洽裁判或官方事務局。',
 		};
 	}
@@ -193,7 +204,7 @@ export async function answer_question(question, opts = {}) {
 	//    而使用者分不出來。
 	if (!refused && !rule_ids.length && !ruling_fids.length) {
 		return {
-			...base, cards: resolved, refused: true, dropped,
+			...base, cards: resolved, refused: true, dropped, debug,
 			answer: '這題找不到可以對應的依據，因此不提供結論 —— 請洽裁判或官方事務局。',
 		};
 	}
@@ -202,7 +213,7 @@ export async function answer_question(question, opts = {}) {
 		model: model_name(),
 		refused,
 		answer: parsed.answer.trim(),
-		rule_ids, ruling_fids, cards: resolved,
+		rule_ids, ruling_fids, cards: resolved, debug,
 		...(dropped.length ? { dropped } : {}),
 	};
 }

@@ -67,6 +67,10 @@ export async function execute(interaction) {
 	const r = await answer_question(question);
 
 	if (r.error && !r.answer) {
+		// ⚠️ 失敗一定要留在日誌裡。原本只有使用者看得到那句「目前無法
+		//    查詢」，回報過來就是一句「出現錯誤」，而配額是每天 20 次 ——
+		//    沒有日誌就只能靠重現去燒額度猜。
+		console.error(`[ask] 失敗：${r.error}｜問題：${question}`);
 		await interaction.editReply(`目前無法查詢：${r.error}`);
 		return;
 	}
@@ -101,4 +105,9 @@ export async function execute(interaction) {
 	//    就值得記一筆 —— 它是判斷 prompt 要不要再收緊的唯一訊號。
 	if (r.dropped?.length)
 		console.warn(`[ask] 模型編造引用 ${JSON.stringify(r.dropped)}｜問題：${question}`);
+
+	// 拒答也要留痕 —— 「查無足夠依據」有兩種成因（檢索沒選到 vs 依據
+	// 真的不涵蓋），而使用者看到的字一模一樣。只有依據清單分得出來。
+	if (r.refused)
+		console.warn(`[ask] 拒答｜問題：${question}｜依據：${JSON.stringify(r.debug ?? {})}`);
 }
