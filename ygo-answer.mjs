@@ -107,7 +107,13 @@ export async function answer_question(question, opts = {}) {
 		return { ...base, refused: true, answer: '規則語料還沒匯入，無法作答。', error: '語料為空' };
 
 	// --- 第一段：挑章節、抽卡名 ---
-	const sel_res = await generate(SELECT_PROMPT(build_toc(), question), { json: true, max_tokens: 3000, ...gen });
+	// ⚠️ thinking_budget 要明講，不要讓它自己決定。思考型模型的推理 token
+	//    算在 maxOutputTokens 裡，不設上限的話它可以把整個預算吃光，
+	//    而症狀是 finishReason=MAX_TOKENS —— HTTP 200、有 token 消耗、
+	//    計數器記成成功，只有回答是空的。實際在 Pi 上踩到過。
+	//    選章只是從目錄挑編號，用不著長篇推理。
+	const sel_res = await generate(SELECT_PROMPT(build_toc(), question),
+		{ json: true, max_tokens: 4096, thinking_budget: 1024, ...gen });
 	if (sel_res.error)
 		return { ...base, refused: true, answer: '目前無法查詢，請稍後再試。', error: sel_res.error };
 
@@ -164,7 +170,10 @@ export async function answer_question(question, opts = {}) {
 	}
 
 	// --- 第二段：作答 ---
-	const ans_res = await generate(ANSWER_PROMPT(question, rules, ruling_ctx), { json: true, max_tokens: 4096, ...gen });
+	// 作答要留足夠的餘裕：推理 2048 + 回答本身（prompt 限 800 字，約 1200
+	// token）。4096 全開給推理時剛好會把回答擠掉，Pi 上就是這樣掛的。
+	const ans_res = await generate(ANSWER_PROMPT(question, rules, ruling_ctx),
+		{ json: true, max_tokens: 8192, thinking_budget: 2048, ...gen });
 	if (ans_res.error)
 		return { ...base, cards: resolved, refused: true, answer: '目前無法查詢，請稍後再試。', error: ans_res.error };
 

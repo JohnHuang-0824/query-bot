@@ -201,15 +201,24 @@ export async function generate(prompt, opts = {}) {
 		const cand = data.candidates?.[0];
 		const text = cand?.content?.parts?.map(p => p.text ?? '').join('') ?? '';
 		const finish = cand?.finishReason ?? '未知';
-		stmt_bump.run(today(), 1, data.usageMetadata?.totalTokenCount ?? 0, 0);
+		const tokens = data.usageMetadata?.totalTokenCount ?? 0;
 
 		// ⚠️ 截斷**必須當成錯誤**。回一段不完整的 JSON 給呼叫端的話，
 		//    它解析失敗之後會退化成「查無結果」—— 那跟「呼叫失敗」是完全
 		//    不同的兩件事，而症狀長得一模一樣。這個坑踩過一次。
-		if (finish === 'MAX_TOKENS')
-			return { error: `輸出被截斷（maxOutputTokens 不足；思考型模型的推理也算在內）` };
-		if (!text)
+		// ⚠️ 截斷與空回應要記成 **errors**，不是成功。原本它們排在
+		//    stmt_bump(…, 0) 後面，於是使用者收到錯誤、計數器卻寫著
+		//    「2 次呼叫、0 個錯誤」—— 查的人會往完全錯誤的方向找。
+		//    HTTP 成功不等於這次呼叫成功。
+		if (finish === 'MAX_TOKENS') {
+			stmt_bump.run(today(), 1, tokens, 1);
+			return { error: '輸出被截斷（maxOutputTokens 不足；思考型模型的推理也算在內）' };
+		}
+		if (!text) {
+			stmt_bump.run(today(), 1, tokens, 1);
 			return { error: `空回應（finishReason=${finish}）` };
+		}
+		stmt_bump.run(today(), 1, tokens, 0);
 		return { text };
 	}
 	stmt_bump.run(today(), 1, 0, 1);
