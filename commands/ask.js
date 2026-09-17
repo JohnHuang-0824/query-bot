@@ -18,8 +18,17 @@ export const experimental = true;
  *
  *    數字設 3 是算出來的，不是抓的：3 題 × 2 次 = 6 次，容得下三個人
  *    在同一天各問滿，還留兩題的餘裕。開了付費層再往上調。
+ *
+ * ⚠️ 設 0 代表**不限制**，開發期間自己一個人測的時候用。
+ *    這時真正的煞車是 Gemini 那邊每天 20 次請求的硬上限 —— 一個人也只能
+ *    問到 10 題就會撞牆。所以解除這個限制不會多花錢，只會改變「撞牆時
+ *    看到的訊息」：從「你問得有點快」變成「目前無法查詢：HTTP 429」。
+ *    ⚠️ 多人用的時候要記得調回來，否則先問的人會把全服的額度吃光。
  */
-const PER_USER_PER_DAY = Number(process.env.ASK_PER_USER_PER_DAY) || 3;
+// ⚠️ 不能寫 `Number(x) || 3` —— 那會讓 0 退回 3，也就是「不限制」設不上去。
+const PER_USER_PER_DAY = process.env.ASK_PER_USER_PER_DAY === undefined
+	? 3
+	: Number(process.env.ASK_PER_USER_PER_DAY);
 
 export const data = new SlashCommandBuilder()
 	.setName('ask')
@@ -56,7 +65,10 @@ export async function execute(interaction) {
 	await interaction.deferReply();
 
 	const key = `user:${interaction.user.id}`;
-	const over = blocked_reason(key, { per_minute: 3, per_day: PER_USER_PER_DAY });
+	// per_day 給 0 的話 blocked_reason 會擋掉每一次（count >= 0 恆真），
+	// 所以「不限制」要在這裡換成一個大到不會踩到的數，不是傳 0 下去。
+	const per_day = PER_USER_PER_DAY > 0 ? PER_USER_PER_DAY : Number.MAX_SAFE_INTEGER;
+	const over = blocked_reason(key, { per_minute: 3, per_day });
 	if (over) {
 		await interaction.editReply(`你問得有點快（${over}）。稍後再試。`);
 		return;
