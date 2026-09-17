@@ -66,10 +66,12 @@ export async function execute(interaction) {
 
 	const r = await answer_question(question);
 
-	if (r.error && !r.answer) {
-		// ⚠️ 失敗一定要留在日誌裡。原本只有使用者看得到那句「目前無法
-		//    查詢」，回報過來就是一句「出現錯誤」，而配額是每天 20 次 ——
-		//    沒有日誌就只能靠重現去燒額度猜。
+	// ⚠️ 守衛原本寫成 `r.error && !r.answer`，而 answer_question 在每一條
+	//    錯誤路徑上都會填一句佔位的 answer（「目前無法查詢，請稍後再試。」）
+	//    —— 所以這條**永遠不成立**。結果是使用者看到「查無足夠依據」加
+	//    一句罐頭訊息，真正的原因（429？404？連線失敗？）連日誌都沒有。
+	//    回報過來就是一句「出現錯誤」，而配額每天只有 20 次，只能靠重現去猜。
+	if (r.error) {
 		console.error(`[ask] 失敗：${r.error}｜問題：${question}`);
 		await interaction.editReply(`目前無法查詢：${r.error}`);
 		return;
