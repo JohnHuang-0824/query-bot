@@ -17,7 +17,13 @@ import { resolve_id, display_name } from './ygo-alias.mjs';
 import { get_card } from './ygo-query.mjs';
 import { cache_state, fetch_rulings, get_rulings, get_ruling, ensure_detail } from './ygo-ruling.mjs';
 
-const MAX_SECTIONS = 3;
+// ⚠️ 3 節太少。實測「P 牌放進 P 區算不算魔法卡的發動」這題：關鍵那句話
+//    在[21] 卡的发动，而目錄裡標題含「发动」的章節就有 50 節 —— 只挑 3 節
+//    等於在賭運氣。dev 挑中了、Pi 沒挑中，同一題一邊肯定作答一邊拒答。
+//
+//    多挑幾節的代價是 token，而**稀缺的是請求數不是 token**（每天 20 次
+//    請求 vs 每分鐘 100 萬 token）。拿不缺的換會缺的，很划算。
+const MAX_SECTIONS = 6;
 const MAX_CARDS = 3;
 const MAX_RULINGS = 6;
 
@@ -37,6 +43,10 @@ ${question}
 - sections 最多 ${MAX_SECTIONS} 個，挑最可能包含答案的章節編號。
   ⚠️ 只有在目錄裡**完全沒有任何相關主題**時才給空陣列 —— 主題沾得上邊就挑出來，
   後面還有一關會判斷依據夠不夠。
+  ⚠️ **問題裡出現的關鍵用語，它的「定義」章節也要挑進來**，不要只挑主題章節。
+  很多問題的形式是「某個動作算不算某個用語」（例如「把 P 怪獸放到 P 區算不算
+  魔法卡的發動」），答案就寫在那個用語的定義裡，而定義章節的標題看起來跟
+  問題一點都不像。寧可多挑一節定義，也不要漏掉。
 - cards 是問題裡提到的卡片名稱，原樣抄出來，最多 ${MAX_CARDS} 個。沒提到卡就給空陣列。
 - 目錄是簡體中文，問題可能是繁體中文或日文，請自行對應。`;
 
@@ -112,8 +122,10 @@ export async function answer_question(question, opts = {}) {
 	//    而症狀是 finishReason=MAX_TOKENS —— HTTP 200、有 token 消耗、
 	//    計數器記成成功，只有回答是空的。實際在 Pi 上踩到過。
 	//    選章只是從目錄挑編號，用不著長篇推理。
+	// temperature 0：檢索不需要創意，需要的是同一題每次挑到同一批章節。
+	// 0.2 的浮動已經造成 dev 與 Pi 對同一題給出相反的結果。
 	const sel_res = await generate(SELECT_PROMPT(build_toc(), question),
-		{ json: true, max_tokens: 4096, thinking_budget: 1024, ...gen });
+		{ json: true, max_tokens: 4096, thinking_budget: 1024, temperature: 0, ...gen });
 	if (sel_res.error)
 		return { ...base, refused: true, answer: '目前無法查詢，請稍後再試。', error: sel_res.error };
 
@@ -124,7 +136,8 @@ export async function answer_question(question, opts = {}) {
 	const card_names = (Array.isArray(sel.cards) ? sel.cards : []).slice(0, MAX_CARDS);
 
 	// --- 蒐集依據 ---
-	const rules = collect_sections(section_ids);
+	// 上限跟著 MAX_SECTIONS 一起放大，否則多挑的章節會被靜靜切掉。
+	const rules = collect_sections(section_ids, 40000);
 
 	const rulings = [];
 	const resolved = [];
