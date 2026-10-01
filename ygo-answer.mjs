@@ -246,8 +246,11 @@ export async function answer_question(question, opts = {}) {
 	// --- 第二段：作答 ---
 	// 作答要留足夠的餘裕：推理 2048 + 回答本身（prompt 限 800 字，約 1200
 	// token）。4096 全開給推理時剛好會把回答擠掉，Pi 上就是這樣掛的。
+	// temperature 0：同一題要得到同一個結論。0.2 時 rules-012 連跑五次是
+	// 可以 2／不能 1／拒答 2，等於擲骰子。⚠️ 一致不等於正確 —— 它只是讓
+	// 錯誤可重現、可以被評測抓到。
 	const ans_res = await generate(ANSWER_PROMPT(question, rules, ruling_ctx, card_ctx),
-		{ stage: 'answer', json: true, max_tokens: 8192, thinking_budget: 2048, ...gen });
+		{ stage: 'answer', json: true, max_tokens: 8192, thinking_budget: 2048, temperature: 0, ...gen });
 	if (ans_res.error)
 		return { ...base, cards: resolved, refused: true, answer: '目前無法查詢，請稍後再試。', error: ans_res.error };
 
