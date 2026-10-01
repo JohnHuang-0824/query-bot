@@ -12,7 +12,7 @@
  */
 
 import { DatabaseSync } from 'node:sqlite';
-import { blocked_reason, wait_ms, record, stats, quota_day } from './ygo-throttle.mjs';
+import { blocked_reason, wait_ms, record, stats, quota_day, next_quota_reset } from './ygo-throttle.mjs';
 
 const BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
 const MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
@@ -36,10 +36,15 @@ const KEY = process.env.GEMINI_API_KEY;
  *
  *    用 env 覆寫：開了付費層或換模型之後改 .env，不要改這裡。
  */
+// ⚠️ 預設**不設**本機上限（GEMINI_RPM／GEMINI_RPD 留空 = 不限制）。
+//    數字以 Google 的 429 回報為準：撞到每日配額時，下面的 quota_block 會把
+//    對方回報的上限記下來，當天剩下的請求在本機直接擋掉並顯示那個數字。
+//    明確設了 env 才會啟用本機上限（例如想比對方更保守）。
+const UNLIMITED = Number.MAX_SAFE_INTEGER;
 const RATE = {
 	MIN_INTERVAL_MS: 1500,
-	PER_MINUTE: Number(process.env.GEMINI_RPM) || 10,
-	PER_DAY: Number(process.env.GEMINI_RPD) || 20,
+	PER_MINUTE: Number(process.env.GEMINI_RPM) || UNLIMITED,
+	PER_DAY: Number(process.env.GEMINI_RPD) || UNLIMITED,
 	MAX_RETRY: 2,
 };
 
@@ -52,6 +57,32 @@ db.exec(`
 		errors INTEGER NOT NULL DEFAULT 0
 	);
 `);
+// Google 回報「今天的配額用完了」之後存在這裡，所有行程共用，太平洋換日自動失效。
+db.exec(`
+	CREATE TABLE IF NOT EXISTS llm_quota_block (
+		source TEXT PRIMARY KEY,
+		day    TEXT NOT NULL,
+		quota  TEXT NOT NULL,
+		value  TEXT NOT NULL
+	);
+`);
+const stmt_block_get = db.prepare('SELECT day, quota, value FROM llm_quota_block WHERE source = ?');
+const stmt_block_set = db.prepare(`
+	INSERT INTO llm_quota_block (source, day, quota, value) VALUES (?, ?, ?, ?)
+	ON CONFLICT(source) DO UPDATE SET day = excluded.day, quota = excluded.quota, value = excluded.value
+`);
+
+function quota_block() {
+	const b = stmt_block_get.get('gemini');
+	return b && b.day === quota_day() ? b : null;
+}
+
+function reset_text() {
+	return new Intl.DateTimeFormat('zh-TW', {
+		timeZone: 'Asia/Taipei', hour12: false, hour: '2-digit', minute: '2-digit',
+	}).format(new Date(next_quota_reset()));
+}
+
 const stmt_bump = db.prepare(`
 	INSERT INTO llm_usage (day, calls, tokens, errors) VALUES (?, ?, ?, ?)
 	ON CONFLICT(day) DO UPDATE SET
@@ -69,7 +100,7 @@ function today() {
 
 /** 近幾天的用量。⚠️ 這不是儀表板，是「撞到上限時知道為什麼」的最低限度。 */
 export function usage(days = 7) {
-	return { days: stmt_usage.all(days), window: stats('gemini') };
+	return { days: stmt_usage.all(days), window: stats('gemini'), quota_block: quota_block() };
 }
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -88,6 +119,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 function parse_429(text) {
 	let delay_ms = 0;
 	const quotas = [];
+	const values = [];
 	try {
 		for (const d of JSON.parse(text)?.error?.details ?? []) {
 			const m = /^(\d+(?:\.\d+)?)s$/.exec(d.retryDelay ?? '');
@@ -96,11 +128,13 @@ function parse_429(text) {
 			for (const v of d.violations ?? []) {
 				if (v.quotaId)
 					quotas.push(v.quotaId);
+				if (v.quotaValue)
+					values.push(v.quotaValue);
 			}
 		}
 	}
 	catch { /* 回應不是 JSON 就只能靠預設退避 */ }
-	return { delay_ms, quota: quotas.join('、') };
+	return { delay_ms, quota: quotas.join('、'), value: values[0] ?? '' };
 }
 
 /**
@@ -120,6 +154,11 @@ export async function generate(prompt, opts = {}) {
 	//    互動中的使用者 → 快速失敗，讓他知道現在忙（等 30 秒更糟）
 	//    批次評測       → 等，否則 30 次呼叫會有大半變成「作答失敗」，
 	//                     而那看起來像模型答不出來，不是節流
+	// Google 今天已經說過配額用完了 —— 不用再送一次請求去確認。
+	const blk = quota_block();
+	if (blk)
+		return { error: `節流：每日上限（Google 回報 ${blk.value || '未知'} 次/天，${blk.quota}），台灣時間 ${reset_text()} 重置` };
+
 	const limits = { per_minute: RATE.PER_MINUTE, per_day: RATE.PER_DAY, day_reset: 'pacific' };
 	let blocked = blocked_reason('gemini', limits);
 	if (blocked && opts.wait_for_slot) {
@@ -177,8 +216,14 @@ export async function generate(prompt, opts = {}) {
 		//    4 秒就放棄，於是三次嘗試在 6 秒內燒掉、還多送兩次請求進去。
 		if (res.status === 429) {
 			const raw = await res.text();
-			const { delay_ms, quota } = parse_429(raw);
+			const { delay_ms, quota, value } = parse_429(raw);
 			last_429 = quota || '未指明配額';
+			// 每日配額（quotaId 含 PerDay）用完 = 今天不用再試。記下來讓後面的請求在本機擋掉。
+			if (/PerDay/i.test(quota)) {
+				stmt_block_set.run('gemini', today(), quota, value);
+				stmt_bump.run(today(), 1, 0, 1);
+				return { error: `節流：每日上限（Google 回報 ${value || '未知'} 次/天，${quota}），台灣時間 ${reset_text()} 重置` };
+			}
 			// 互動中的使用者等不了一分鐘，批次評測可以。
 			const cap = opts.wait_for_slot ? 70_000 : 5_000;
 			const need = delay_ms || 2000 * (attempt + 1);

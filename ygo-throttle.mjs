@@ -52,6 +52,11 @@ function pacific_day_start() {
 	return now - into_day * 1000;
 }
 
+/** 下一個太平洋午夜（= 對方每日配額重置）的時間戳。DST 換日那天會差一小時，不影響顯示用途。 */
+export function next_quota_reset() {
+	return pacific_day_start() + 86_400_000;
+}
+
 /** 今天（太平洋時間）的日期字串，用來跟對方的配額對齊。 */
 export function quota_day() {
 	return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Los_Angeles' }).format(new Date());
