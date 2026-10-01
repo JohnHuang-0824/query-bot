@@ -11,7 +11,7 @@
  *    prompt 裡的一句期望。
  */
 
-import { generate, model_name } from './ygo-gemini.mjs';
+import { generate, model_name } from './ygo-llm.mjs';
 import { build_toc, collect_sections, get_section, corpus_state } from './ygo-rules.mjs';
 import { resolve_id, display_name } from './ygo-alias.mjs';
 import { get_card } from './ygo-query.mjs';
@@ -125,7 +125,7 @@ export async function answer_question(question, opts = {}) {
 	// temperature 0：檢索不需要創意，需要的是同一題每次挑到同一批章節。
 	// 0.2 的浮動已經造成 dev 與 Pi 對同一題給出相反的結果。
 	const sel_res = await generate(SELECT_PROMPT(build_toc(), question),
-		{ json: true, max_tokens: 4096, thinking_budget: 1024, temperature: 0, ...gen });
+		{ stage: 'select', json: true, max_tokens: 4096, thinking_budget: 1024, temperature: 0, ...gen });
 	if (sel_res.error)
 		return { ...base, refused: true, answer: '目前無法查詢，請稍後再試。', error: sel_res.error };
 
@@ -186,7 +186,7 @@ export async function answer_question(question, opts = {}) {
 	// 作答要留足夠的餘裕：推理 2048 + 回答本身（prompt 限 800 字，約 1200
 	// token）。4096 全開給推理時剛好會把回答擠掉，Pi 上就是這樣掛的。
 	const ans_res = await generate(ANSWER_PROMPT(question, rules, ruling_ctx),
-		{ json: true, max_tokens: 8192, thinking_budget: 2048, ...gen });
+		{ stage: 'answer', json: true, max_tokens: 8192, thinking_budget: 2048, ...gen });
 	if (ans_res.error)
 		return { ...base, cards: resolved, refused: true, answer: '目前無法查詢，請稍後再試。', error: ans_res.error };
 
