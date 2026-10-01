@@ -24,7 +24,7 @@ import { cache_state, fetch_rulings, get_rulings, get_ruling, ensure_detail } fr
 //    多挑幾節的代價是 token，而**稀缺的是請求數不是 token**（每天 20 次
 //    請求 vs 每分鐘 100 萬 token）。拿不缺的換會缺的，很划算。
 const MAX_SECTIONS = 6;
-const MAX_CARDS = 3;
+const MAX_CARDS = 5;
 const MAX_RULINGS = 6;
 // 單張卡的效果文本上限。⚠️ 要截就截尾巴，不要截頭 —— 效果文字的條件在前。
 const MAX_CARD_TEXT = 1500;
