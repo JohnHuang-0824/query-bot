@@ -26,6 +26,8 @@ import { cache_state, fetch_rulings, get_rulings, get_ruling, ensure_detail } fr
 const MAX_SECTIONS = 6;
 const MAX_CARDS = 3;
 const MAX_RULINGS = 6;
+// 單張卡的效果文本上限。⚠️ 要截就截尾巴，不要截頭 —— 效果文字的條件在前。
+const MAX_CARD_TEXT = 1500;
 
 /* ------------------------------------------------------------------ 第一段 */
 
@@ -64,7 +66,7 @@ function parse_json(text) {
 
 /* ------------------------------------------------------------------ 第二段 */
 
-const ANSWER_PROMPT = (question, rules, rulings) => `你是遊戲王規則的說明助手。只能根據下面提供的「依據」回答，不能使用依據以外的知識。
+const ANSWER_PROMPT = (question, rules, rulings, cards) => `你是遊戲王規則的說明助手。只能根據下面提供的「依據」回答，不能使用依據以外的知識。
 
 === 依據 A：規則文件（簡體中文，來源 OCG Rule）===
 ${rules.length ? rules.map(r => `[規則 ${r.id}] ${r.path}\n${r.body}`).join('\n\n---\n\n') : '（沒有提供）'}
@@ -72,11 +74,14 @@ ${rules.length ? rules.map(r => `[規則 ${r.id}] ${r.path}\n${r.body}`).join('\
 === 依據 B：官方裁定（日文，來源 Konami 官方資料庫）===
 ${rulings.length ? rulings.map(r => `[裁定 ${r.fid}] 更新 ${r.updated_at ?? '—'}\nQ: ${r.question}\nA: ${r.answer ?? '（未取得全文）'}`).join('\n\n---\n\n') : '（沒有提供）'}
 
+=== 依據 C：卡片效果文本（繁體中文，來源 卡片資料庫）===
+${cards.length ? cards.map(c => `[卡片 ${c.id}] ${c.name}\n${c.text}`).join('\n\n---\n\n') : '（沒有提供）'}
+
 === 使用者的問題 ===
 ${question}
 
 請輸出 JSON，不要有其他文字：
-{"refused":布林,"answer":"繁體中文回答","cites":[{"type":"rule","id":數字},{"type":"ruling","id":數字}]}
+{"refused":布林,"answer":"繁體中文回答","cites":[{"type":"rule","id":數字},{"type":"ruling","id":數字},{"type":"card","id":數字}]}
 
 必須遵守的規則：
 1. **回答用繁體中文**，但引用依據裡的原文時**一字不改地照抄**，不要翻譯、不要改寫。
@@ -92,7 +97,10 @@ ${question}
    **不要用「一般來說」「應該是」「推測」這種說法把推論講成事實。**
 6. 回答時**保留遊戲王的術語原樣**（cost、連鎖、時點、效果處理等），不要翻譯成日常用語。
 7. 規則文件是社群整理的，官方裁定才是官方的。兩者衝突時以官方裁定為準，並說明。
-8. answer 控制在 800 字以內。`;
+8. 依據 C 只能用來確認「這張卡的效果文字寫了什麼」（發動條件、時點、必發或選發等），
+   **不能**用它推測規則怎麼處理。效果文字與規則怎麼套用，仍要由依據 A、B 說明；
+   兩者合起來也不能組合出它們都沒說過的新結論（第 4 條）。
+9. answer 控制在 800 字以內。`;
 
 /* ------------------------------------------------------------------ 主流程 */
 
@@ -103,7 +111,7 @@ ${question}
  * @param {{ allow_fetch?: boolean }} opts
  * @returns {Promise<{
  *   refused: boolean, answer: string, model: string,
- *   rule_ids: number[], ruling_fids: number[], cards: string[],
+ *   rule_ids: number[], ruling_fids: number[], card_ids: number[], cards: string[],
  *   error?: string, dropped?: string[]
  * }>}
  */
@@ -141,6 +149,7 @@ export async function answer_question(question, opts = {}) {
 
 	const rulings = [];
 	const resolved = [];
+	const card_ctx = [];
 	for (const name of card_names) {
 		const id = resolve_id(name);
 		if (id === null)
@@ -149,6 +158,14 @@ export async function answer_question(question, opts = {}) {
 		if (!card?.cid)
 			continue;
 		resolved.push(display_name(id));
+		const text = card.text?.description;
+		if (text && !card_ctx.some(c => c.id === card.id)) {
+			card_ctx.push({
+				id: card.id,
+				name: display_name(id),
+				text: text.length > MAX_CARD_TEXT ? `${text.slice(0, MAX_CARD_TEXT)}…` : text,
+			});
+		}
 		if (allow_fetch && !cache_state(card.cid).fetched)
 			await fetch_rulings(card.cid);
 		for (const r of get_rulings(card.cid).slice(0, MAX_RULINGS)) {
@@ -171,11 +188,12 @@ export async function answer_question(question, opts = {}) {
 		sections: rules.map(r => `${r.id}:${r.path}`),
 		cards: card_names.map(n => `${n}→${resolve_id(n) ?? '解析不到'}`),
 		rulings: ruling_ctx.map(r => `${r.fid}${r.answer ? '' : '（沒全文）'}`),
+		card_texts: card_ctx.map(c => `${c.id}:${c.name}`),
 	};
 	if (process.env.YGO_DEBUG)
 		console.log(`[ask] 依據：${JSON.stringify(debug, null, 1)}`);
 
-	if (!rules.length && !ruling_ctx.length) {
+	if (!rules.length && !ruling_ctx.length && !card_ctx.length) {
 		return {
 			...base, cards: resolved, refused: true, debug,
 			answer: '查無可用的依據（規則章節與官方裁定都沒有命中）。這不代表可以自行推論結果 —— 請洽裁判或官方事務局。',
@@ -185,7 +203,7 @@ export async function answer_question(question, opts = {}) {
 	// --- 第二段：作答 ---
 	// 作答要留足夠的餘裕：推理 2048 + 回答本身（prompt 限 800 字，約 1200
 	// token）。4096 全開給推理時剛好會把回答擠掉，Pi 上就是這樣掛的。
-	const ans_res = await generate(ANSWER_PROMPT(question, rules, ruling_ctx),
+	const ans_res = await generate(ANSWER_PROMPT(question, rules, ruling_ctx, card_ctx),
 		{ stage: 'answer', json: true, max_tokens: 8192, thinking_budget: 2048, ...gen });
 	if (ans_res.error)
 		return { ...base, cards: resolved, refused: true, answer: '目前無法查詢，請稍後再試。', error: ans_res.error };
@@ -200,10 +218,12 @@ export async function answer_question(question, opts = {}) {
 	// 在編 —— 那種回答比沒有回答危險得多，因為它看起來有出處。
 	const rule_ok = new Set(rules.map(r => r.id));
 	const ruling_ok = new Set(ruling_ctx.map(r => r.fid));
+	const card_ok = new Set(card_ctx.map(c => c.id));
 	const cites = Array.isArray(parsed.cites) ? parsed.cites : [];
 	const dropped = [];
 	const rule_ids = [];
 	const ruling_fids = [];
+	const card_ids = [];
 	// ⚠️ 編號欄位名要寬容，**允許的編號集合要嚴格**。
 	//    prompt 裡規則用 id、裁定用 fid，模型實測會把兩者都寫成 id ——
 	//    踩過一次：fid 24022（炎王の聖域 × 羽根帚，確實有送進去）被當成
@@ -215,6 +235,8 @@ export async function answer_question(question, opts = {}) {
 			rule_ids.push(n);
 		else if (c?.type === 'ruling' && ruling_ok.has(n))
 			ruling_fids.push(n);
+		else if (c?.type === 'card' && card_ok.has(n))
+			card_ids.push(n);
 		else
 			dropped.push(JSON.stringify(c));
 	}
@@ -224,7 +246,7 @@ export async function answer_question(question, opts = {}) {
 	// 沒拒答卻一個有效引用都沒有 → 整個回答作廢。
 	// ⚠️ 不要只是把引用拿掉照樣顯示 —— 沒有出處的規則回答就是猜測，
 	//    而使用者分不出來。
-	if (!refused && !rule_ids.length && !ruling_fids.length) {
+	if (!refused && !rule_ids.length && !ruling_fids.length && !card_ids.length) {
 		return {
 			...base, cards: resolved, refused: true, dropped, debug,
 			answer: '這題找不到可以對應的依據，因此不提供結論 —— 請洽裁判或官方事務局。',
@@ -235,7 +257,7 @@ export async function answer_question(question, opts = {}) {
 		model: model_name(),
 		refused,
 		answer: parsed.answer.trim(),
-		rule_ids, ruling_fids, cards: resolved, debug,
+		rule_ids, ruling_fids, card_ids, cards: resolved, debug,
 		...(dropped.length ? { dropped } : {}),
 	};
 }

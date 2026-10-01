@@ -2,6 +2,7 @@ import { SlashCommandBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, Mess
 import { answer_question } from '../ygo-answer.mjs';
 import { get_section, section_url } from '../ygo-rules.mjs';
 import { get_ruling } from '../ygo-ruling.mjs';
+import { get_card } from '../ygo-query.mjs';
 import { blocked_reason, record } from '../ygo-throttle.mjs';
 
 export const module_url = import.meta.url;
@@ -52,6 +53,11 @@ function source_lines(r) {
 		const s = get_section(id);
 		if (s)
 			out.push(`・規則：${clip(s.path, 60)} <${section_url(s.file)}>`);
+	}
+	for (const id of r.card_ids ?? []) {
+		const c = get_card(id);
+		if (c)
+			out.push(`・卡片效果：${c.text.tw_name}`);
 	}
 	for (const fid of r.ruling_fids) {
 		const g = get_ruling(fid);
