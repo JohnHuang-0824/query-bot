@@ -33,8 +33,8 @@ services:
       # 速率上限。⚠️ 以 429 回應裡的 quotaValue 為準，不要照文件填 ——
       # 2026-09-16 實測免費層是每天 20 次（文件寫 1500）。一題兩次呼叫，
       # 所以全服每天 10 題。開了付費層再往上調，不用改程式。
-      GEMINI_RPD:              ${GEMINI_RPD:-20}
-      GEMINI_RPM:              ${GEMINI_RPM:-10}
+      GEMINI_RPD:              ${GEMINI_RPD:-}
+      GEMINI_RPM:              ${GEMINI_RPM:-}
       # Claude（LLM_PROVIDER=claude 時用）。兩段用不同模型，版本釘死。
       ANTHROPIC_API_KEY:       ${ANTHROPIC_API_KEY:-}
       CLAUDE_MODEL_SELECT:     ${CLAUDE_MODEL_SELECT:-claude-haiku-4-5-20251001}
