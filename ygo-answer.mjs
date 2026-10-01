@@ -81,7 +81,7 @@ ${cards.length ? cards.map(c => `[卡片 ${c.id}] ${c.name}\n${c.text}`).join('\
 ${question}
 
 請輸出 JSON，不要有其他文字：
-{"refused":布林,"answer":"繁體中文回答","cites":[{"type":"rule","id":數字},{"type":"ruling","id":數字},{"type":"card","id":數字}]}
+{"refused":布林,"answer":"繁體中文回答","cites":[{"type":"rule","id":數字,"quote":"原文"},{"type":"ruling","id":數字,"quote":"原文"},{"type":"card","id":數字,"quote":"原文"}]}
 
 必須遵守的規則：
 1. **回答用繁體中文**，但引用依據裡的原文時**一字不改地照抄**，不要翻譯、不要改寫。
@@ -104,10 +104,41 @@ ${question}
    「同理」「換言之」。** 一條裁定問的是 A 情境，就只能拿來回答 A 情境；
    你想用「它說 A 不行，所以暗示 B 可以」把它延伸到使用者問的 B，那就是組合推論，
    該拒答，不是該寫「暗示」。
-10. answer 控制在 800 字以內。`;
+10. ⚠️ **每一個 cites 都要附 quote：從該條依據裡一字不改地抄一段支持你結論的原文**
+    （至少 8 個字，不要翻譯、不要改寫、不要省略中間的字）。程式會拿 quote 去比對該條依據
+    的原文，對不上的整個回答作廢。抄不出一段直接支持結論的原文，就代表這條依據不能用。
+11. answer 控制在 800 字以內。`;
 
 // 組合推論的口頭禪。⚠️ 這只是**訊號**不是判決：正常回答也可能剛好用到這些字，
 // 所以目前只記日誌、回傳 hedges，不改變拒答與否。先看過幾題的誤判率再決定要不要硬擋。
+// 比對引文用的正規化：全半形統一、去掉所有空白與換行。模型抄原文時常會
+// 在換行處多加或少加空白，那不是編造，不該因此作廢。
+const norm_quote = t => (t ?? '').normalize('NFKC').replace(/\s+/g, '');
+const MIN_QUOTE = 8;
+
+/**
+ * 引文是否真的出現在依據原文裡。
+ *
+ * 模型抄長段原文時常用「...」或「…」省略中間，那是正當的節錄，不是編造 ——
+ * 所以按省略號切成片段，每一段都要**依序**出現在原文裡。⚠️ 片段不能亂序：
+ * 亂序等於把不相干的句子拼成一句原文。
+ * 太短的片段（< 4 字）幾乎什麼都對得上，不計入比對，但整段引文
+ * 去掉省略號後仍要有 MIN_QUOTE 字。
+ */
+function quote_in(evidence, quote) {
+	const frags = (quote ?? '').split(/\.{2,}|…|⋯/).map(norm_quote).filter(f => f.length >= 4);
+	if (frags.reduce((n, f) => n + f.length, 0) < MIN_QUOTE)
+		return 'short';
+	let at = 0;
+	for (const f of frags) {
+		const i = evidence.indexOf(f, at);
+		if (i < 0)
+			return 'missing';
+		at = i + f.length;
+	}
+	return 'ok';
+}
+
 const HEDGE_WORDS = ['暗示', '可推知', '可以推知', '推測', '類推', '同理', '換言之', '應該是', '一般來說'];
 
 function find_hedges(text) {
@@ -233,6 +264,16 @@ export async function answer_question(question, opts = {}) {
 	const card_ok = new Set(card_ctx.map(c => c.id));
 	const cites = Array.isArray(parsed.cites) ? parsed.cites : [];
 	const dropped = [];
+	const bad_quotes = [];
+	// 每條依據的原文（正規化後），給 quote 比對用。
+	const evidence = {
+		rule: new Map(rules.map(r => [r.id, norm_quote(`${r.path}
+${r.body}`)])),
+		ruling: new Map(ruling_ctx.map(r => [r.fid, norm_quote(`${r.question}
+${r.answer ?? ''}`)])),
+		card: new Map(card_ctx.map(c => [c.id, norm_quote(`${c.name}
+${c.text}`)])),
+	};
 	const rule_ids = [];
 	const ruling_fids = [];
 	const card_ids = [];
@@ -243,20 +284,44 @@ export async function answer_question(question, opts = {}) {
 	//    「這個編號我們沒送過」才是。
 	for (const c of cites) {
 		const n = Number(c?.fid ?? c?.id);
-		if (c?.type === 'rule' && rule_ok.has(n))
-			rule_ids.push(n);
-		else if (c?.type === 'ruling' && ruling_ok.has(n))
-			ruling_fids.push(n);
-		else if (c?.type === 'card' && card_ok.has(n))
-			card_ids.push(n);
-		else
+		const ok = (c?.type === 'rule' && rule_ok.has(n))
+			|| (c?.type === 'ruling' && ruling_ok.has(n))
+			|| (c?.type === 'card' && card_ok.has(n));
+		if (!ok) {
 			dropped.push(JSON.stringify(c));
+			continue;
+		}
+		// ⚠️ 編號對得上還不夠 —— 引文也要真的出現在那條依據裡。
+		//    編號是真的、內容是編的，比編號是假的更難發現。
+		const verdict = quote_in(evidence[c.type].get(n) ?? '', c.quote);
+		if (verdict !== 'ok') {
+			const why = verdict === 'short' ? '沒附引文或太短' : '引文在該依據裡找不到';
+			bad_quotes.push(`${c.type}:${n}（${why}）`);
+			dropped.push(JSON.stringify(c));
+			continue;
+		}
+		if (c.type === 'rule')
+			rule_ids.push(n);
+		else if (c.type === 'ruling')
+			ruling_fids.push(n);
+		else
+			card_ids.push(n);
 	}
 
 	const refused = parsed.refused === true;
 	const hedges = refused ? [] : find_hedges(parsed.answer);
 	if (hedges.length)
 		console.warn(`[ask] 回答含推論用語 ${JSON.stringify(hedges)}｜問題：${question}`);
+
+	// 引文對不上 = 模型在這條引用上編造或亂改。整個回答作廢，不是只拿掉那條 ——
+	// 它的結論多半就是靠那段「原文」得出來的。
+	if (!refused && bad_quotes.length) {
+		console.warn(`[ask] 引文驗證失敗 ${bad_quotes.join('、')}｜問題：${question}`);
+		return {
+			...base, cards: resolved, refused: true, dropped, debug,
+			answer: '回答的引文無法對回依據原文，因此不提供結論 —— 請洽裁判或官方事務局。',
+		};
+	}
 
 	// 沒拒答卻一個有效引用都沒有 → 整個回答作廢。
 	// ⚠️ 不要只是把引用拿掉照樣顯示 —— 沒有出處的規則回答就是猜測，
