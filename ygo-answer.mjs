@@ -100,7 +100,19 @@ ${question}
 8. 依據 C 只能用來確認「這張卡的效果文字寫了什麼」（發動條件、時點、必發或選發等），
    **不能**用它推測規則怎麼處理。效果文字與規則怎麼套用，仍要由依據 A、B 說明；
    兩者合起來也不能組合出它們都沒說過的新結論（第 4 條）。
-9. answer 控制在 800 字以內。`;
+9. ⚠️ **引用一條依據時，只能說它「直接寫了什麼」，不可以說它「暗示」「可推知」「類推」
+   「同理」「換言之」。** 一條裁定問的是 A 情境，就只能拿來回答 A 情境；
+   你想用「它說 A 不行，所以暗示 B 可以」把它延伸到使用者問的 B，那就是組合推論，
+   該拒答，不是該寫「暗示」。
+10. answer 控制在 800 字以內。`;
+
+// 組合推論的口頭禪。⚠️ 這只是**訊號**不是判決：正常回答也可能剛好用到這些字，
+// 所以目前只記日誌、回傳 hedges，不改變拒答與否。先看過幾題的誤判率再決定要不要硬擋。
+const HEDGE_WORDS = ['暗示', '可推知', '可以推知', '推測', '類推', '同理', '換言之', '應該是', '一般來說'];
+
+function find_hedges(text) {
+	return HEDGE_WORDS.filter(w => text.includes(w));
+}
 
 /* ------------------------------------------------------------------ 主流程 */
 
@@ -242,6 +254,9 @@ export async function answer_question(question, opts = {}) {
 	}
 
 	const refused = parsed.refused === true;
+	const hedges = refused ? [] : find_hedges(parsed.answer);
+	if (hedges.length)
+		console.warn(`[ask] 回答含推論用語 ${JSON.stringify(hedges)}｜問題：${question}`);
 
 	// 沒拒答卻一個有效引用都沒有 → 整個回答作廢。
 	// ⚠️ 不要只是把引用拿掉照樣顯示 —— 沒有出處的規則回答就是猜測，
@@ -259,5 +274,6 @@ export async function answer_question(question, opts = {}) {
 		answer: parsed.answer.trim(),
 		rule_ids, ruling_fids, card_ids, cards: resolved, debug,
 		...(dropped.length ? { dropped } : {}),
+		...(hedges.length ? { hedges } : {}),
 	};
 }
