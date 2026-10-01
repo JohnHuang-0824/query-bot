@@ -22,7 +22,9 @@ services:
 
       # 第 4 階段的繁中解釋層。
       # ⚠️ 要另開 Google Cloud 專案，不要跟其他專案共用免費層配額。
-      GEMINI_API_KEY: ${GEMINI_API_KEY:?請在 .env 設定 GEMINI_API_KEY}
+      # LLM_PROVIDER=gemini（預設）或 claude。換供應者要重跑評測。
+      LLM_PROVIDER: ${LLM_PROVIDER:-gemini}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       # ⚠️ 預設值一度寫成 gemini-3-flash —— **那個名字不存在**（是
       #    gemini-3-flash-preview）。.env 沒設 GEMINI_MODEL 的話，Pi 上
       #    每一次 /ask 都會 404，而症狀是「機器人壞了」不是「模型名錯了」。
@@ -33,6 +35,11 @@ services:
       # 所以全服每天 10 題。開了付費層再往上調，不用改程式。
       GEMINI_RPD:              ${GEMINI_RPD:-20}
       GEMINI_RPM:              ${GEMINI_RPM:-10}
+      # Claude（LLM_PROVIDER=claude 時用）。兩段用不同模型，版本釘死。
+      ANTHROPIC_API_KEY:       ${ANTHROPIC_API_KEY:-}
+      CLAUDE_MODEL_SELECT:     ${CLAUDE_MODEL_SELECT:-claude-haiku-4-5-20251001}
+      CLAUDE_MODEL_ANSWER:     ${CLAUDE_MODEL_ANSWER:-claude-sonnet-5-5}
+      CLAUDE_RPM:              ${CLAUDE_RPM:-30}
       # 0 = 不限制（開發期間自己測用）。真正的煞車是上面的 GEMINI_RPD。
       ASK_PER_USER_PER_DAY:    ${ASK_PER_USER_PER_DAY:-3}
 
