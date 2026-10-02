@@ -179,6 +179,16 @@ async function run_rules(c) {
 	if (e.must_refuse === false && r.refused)
 		bad.push('不該拒答卻拒答了');
 
+	// 結論不可以是這個樣子。⚠️ 只在**沒拒答**時檢查 —— 拒答的字面裡可能剛好有
+	//    「可以」，而拒答本來就是可接受的結果。用正規表達式是因為「可以發動」
+	//    是「不可以發動」的子字串，單純比字串會誤判。
+	if (!r.refused) {
+		for (const re of e.must_not_conclude ?? []) {
+			if (new RegExp(re).test(r.answer))
+				bad.push(`給出了不該有的結論（符合 /${re}/）`);
+		}
+	}
+
 	for (const w of e.must_not_contain ?? []) {
 		if (r.answer.includes(w))
 			bad.push(`出現禁用字眼「${w}」`);
