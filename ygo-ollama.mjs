@@ -24,6 +24,12 @@ const NUM_CTX = Number(process.env.OLLAMA_NUM_CTX) || 16384;
 //    靜默截斷到 8192 —— 實測 rules-012 就是這樣，兩次 prompt 都剛好 8194 token。
 //    本機模型沒有思考預算，答案本身 2048 綽綽有餘。
 const NUM_PREDICT = Number(process.env.OLLAMA_NUM_PREDICT) || 2048;
+// qwen3 這類思考型模型預設會先輸出一長串推理（佔 num_predict、也很慢）。選章節與作答
+// 都不需要，預設關掉；想開再設 OLLAMA_THINK=1。對不是思考型的模型這個參數無害。
+// 估算 prompt token 用的比例（token／字）。預設 1.0 = 保守；不同模型的 tokenizer 不同，
+// 估得太保守會擋掉其實放得下的 prompt，可依 YGO_DEBUG 印出的實際 prompt_tokens 校正。
+const EST_RATIO = Number(process.env.OLLAMA_EST_RATIO) || 1.0;
+const THINK = process.env.OLLAMA_THINK === '1';
 const TIMEOUT_MS = Number(process.env.OLLAMA_TIMEOUT_MS) || 15 * 60_000;
 
 const JSON_SYSTEM = '只輸出一個 JSON 物件，不要有任何其他文字、說明或 markdown 程式碼框。';
@@ -46,6 +52,7 @@ export async function generate(prompt, opts = {}) {
 	const body = {
 		model,
 		stream: true,
+		think: THINK,
 		messages: [
 			...(opts.json ? [{ role: 'system', content: JSON_SYSTEM }] : []),
 			{ role: 'user', content: prompt },
@@ -62,7 +69,7 @@ export async function generate(prompt, opts = {}) {
 	//    （實測：num_ctx 16384 的 ~20k token prompt 回報 prompt_eval_count = 8194），
 	//    所以事後看回報的數字抓不到 —— 數字看起來很正常，只是依據被丟了一半。
 	//    純簡中約 0.54 token/字，但 prompt 混了日文裁定與繁中，實測整份約 0.95 token/字（25k 字 = 24224 token），取 1.0 保守估。
-	const est_tokens = Math.ceil(prompt.length * 1.0);
+	const est_tokens = Math.ceil(prompt.length * EST_RATIO);
 	if (est_tokens + body.options.num_predict > NUM_CTX) {
 		return { error: `提示估計約 ${est_tokens} token，加上輸出 ${body.options.num_predict} 超過 num_ctx ${NUM_CTX}，會被靜默截斷；調高 OLLAMA_NUM_CTX` };
 	}
@@ -123,6 +130,11 @@ export async function generate(prompt, opts = {}) {
 	if (process.env.YGO_DEBUG)
 		console.log(`[ollama] ${JSON.stringify(meta)}`);
 
+	// 被砍過的特徵：回報的 prompt token 數恰好落在 num_ctx 的一半（Ollama 砍到約一半）。
+	if (Math.abs(prompt_tokens - NUM_CTX / 2) <= 8) {
+		errors++;
+		return { error: `疑似被截斷（prompt_eval_count ${prompt_tokens} ≈ num_ctx ${NUM_CTX} 的一半）；調高 OLLAMA_NUM_CTX`, meta };
+	}
 	// 事後再檢查一次：回報的 token 數遠少於字數該有的量，代表被砍過（估算漏掉的情況）。
 	if (prompt_tokens < prompt.length * 0.3) {
 		errors++;

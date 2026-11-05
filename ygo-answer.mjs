@@ -175,12 +175,20 @@ export async function answer_question(question, opts = {}) {
 	//    選章只是從目錄挑編號，用不著長篇推理。
 	// temperature 0：檢索不需要創意，需要的是同一題每次挑到同一批章節。
 	// 0.2 的浮動已經造成 dev 與 Pi 對同一題給出相反的結果。
-	const sel_res = await generate(SELECT_PROMPT(build_toc(), question),
-		{ stage: 'select', json: true, max_tokens: 4096, thinking_budget: 1024, temperature: 0, ...gen });
-	if (sel_res.error)
-		return { ...base, refused: true, answer: '目前無法查詢，請稍後再試。', error: sel_res.error };
-
-	const sel = parse_json(sel_res.text) ?? {};
+	// 測試用：opts.force_sections／force_cards 直接指定第一段的結果，跳過第一段的模型呼叫。
+	// 用來把「第二段模型的品質」和「第一段選章節的隨機性」分開 —— 兩者疊在一起時，
+	// 拒答分不出是章節沒選到還是作答模型不行。正式路徑不會傳這兩個。
+	let sel;
+	if (Array.isArray(opts.force_sections)) {
+		sel = { sections: opts.force_sections, cards: opts.force_cards ?? [] };
+	}
+	else {
+		const sel_res = await generate(SELECT_PROMPT(build_toc(), question),
+			{ stage: 'select', json: true, max_tokens: 4096, thinking_budget: 1024, temperature: 0, ...gen });
+		if (sel_res.error)
+			return { ...base, refused: true, answer: '目前無法查詢，請稍後再試。', error: sel_res.error };
+		sel = parse_json(sel_res.text) ?? {};
+	}
 	const section_ids = (Array.isArray(sel.sections) ? sel.sections : [])
 		.map(Number).filter(Number.isInteger).slice(0, MAX_SECTIONS)
 		.filter(id => get_section(id));
