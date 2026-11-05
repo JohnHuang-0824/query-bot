@@ -14,7 +14,8 @@
 import { DatabaseSync } from 'node:sqlite';
 import { blocked_reason, wait_ms, record, stats, quota_day, next_quota_reset } from './ygo-throttle.mjs';
 
-const BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
+// GEMINI_BASE_URL 只給測試用（指到本機假伺服器驗證重試邏輯），正式環境不要設。
+const BASE = process.env.GEMINI_BASE_URL || 'https://generativelanguage.googleapis.com/v1beta/models';
 const MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
 const KEY = process.env.GEMINI_API_KEY;
 
@@ -235,6 +236,15 @@ export async function generate(prompt, opts = {}) {
 			}
 			stmt_bump.run(today(), 1, 0, 1);
 			return { error: `HTTP 429（配額：${last_429}）${delay_ms ? `，對方要求等 ${Math.round(delay_ms / 1000)} 秒` : ''}` };
+		}
+		// 5xx（尤其 503「This model is currently experiencing high demand」）是 Google
+		// 暫時過載，過幾秒就好 —— 不該把它直接丟給使用者變成「目前無法查詢」。
+		// 沿用 MAX_RETRY；最後一次嘗試仍失敗才往下走成錯誤。互動中的使用者等不久，批次評測可以多等。
+		if ([500, 502, 503, 504].includes(res.status) && attempt < RATE.MAX_RETRY) {
+			await res.text();
+			stmt_bump.run(today(), 1, 0, 1);
+			await sleep((opts.wait_for_slot ? 5000 : 1500) * (attempt + 1));
+			continue;
 		}
 		if (!res.ok) {
 			stmt_bump.run(today(), 1, 0, 1);
