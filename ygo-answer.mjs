@@ -107,6 +107,7 @@ ${question}
 10. ⚠️ **依據的每一句前面都有編號，形如 ⟦3⟧。** 每一個 cites 都要在 sents 填入
     直接支持你結論的那幾句的編號（至多 5 句）。**只填編號，不要自己寫引文** ——
     程式會用編號取回原文。沒有任何一句直接支持結論，就代表這條依據不能用。
+    **answer 的文字裡不要出現 ⟦ ⟧ 編號**；回答若提到「規則」或「裁定」，cites 就必須有對應的 rule／ruling。
 11. answer 控制在 800 字以內。`;
 
 // 組合推論的口頭禪。⚠️ 這只是**訊號**不是判決：正常回答也可能剛好用到這些字，
@@ -383,6 +384,24 @@ ${c.text}`)])),
 			...base, cards: resolved, refused: true, dropped, debug,
 			answer: '回答的引文無法對回依據原文，因此不提供結論 —— 請洽裁判或官方事務局。',
 		};
+	}
+
+	// 回答說「依據規則／裁定」，cites 卻沒有對應的有效引用 → 作廢。
+	// ⚠️ 只靠卡片效果文本的引用撐起來的回答，不能宣稱有規則依據
+	//    （實測 qwen3 會這樣：只引卡片，卻寫「依據規則文件」）。
+	if (!refused) {
+		const missing = [];
+		if (/規則|OCG ?Rule/i.test(parsed.answer) && !rule_ids.length)
+			missing.push('規則');
+		if (/裁定/.test(parsed.answer) && !ruling_fids.length)
+			missing.push('裁定');
+		if (missing.length) {
+			console.warn(`[ask] 回答提到${missing.join('、')}但沒有對應引用｜問題：${question}`);
+			return {
+				...base, cards: resolved, refused: true, dropped, debug,
+				answer: `回答聲稱依據${missing.join('、')}，但沒有對應的有效引用，因此不提供結論 —— 請洽裁判或官方事務局。`,
+			};
+		}
 	}
 
 	// 沒拒答卻一個有效引用都沒有 → 整個回答作廢。
