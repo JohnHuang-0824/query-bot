@@ -69,19 +69,19 @@ function parse_json(text) {
 const ANSWER_PROMPT = (question, rules, rulings, cards) => `你是遊戲王規則的說明助手。只能根據下面提供的「依據」回答，不能使用依據以外的知識。
 
 === 依據 A：規則文件（簡體中文，來源 OCG Rule）===
-${rules.length ? rules.map(r => `[規則 ${r.id}] ${r.path}\n${r.body}`).join('\n\n---\n\n') : '（沒有提供）'}
+${rules.length ? rules.map(r => `[規則 ${r.id}] ${r.path}\n${r.view}`).join('\n\n---\n\n') : '（沒有提供）'}
 
 === 依據 B：官方裁定（日文，來源 Konami 官方資料庫）===
-${rulings.length ? rulings.map(r => `[裁定 ${r.fid}] 更新 ${r.updated_at ?? '—'}\nQ: ${r.question}\nA: ${r.answer ?? '（未取得全文）'}`).join('\n\n---\n\n') : '（沒有提供）'}
+${rulings.length ? rulings.map(r => `[裁定 ${r.fid}] 更新 ${r.updated_at ?? '—'}\n${r.view}`).join('\n\n---\n\n') : '（沒有提供）'}
 
 === 依據 C：卡片效果文本（繁體中文，來源 卡片資料庫）===
-${cards.length ? cards.map(c => `[卡片 ${c.id}] ${c.name}\n${c.text}`).join('\n\n---\n\n') : '（沒有提供）'}
+${cards.length ? cards.map(c => `[卡片 ${c.id}] ${c.name}\n${c.view}`).join('\n\n---\n\n') : '（沒有提供）'}
 
 === 使用者的問題 ===
 ${question}
 
 請輸出 JSON，不要有其他文字：
-{"refused":布林,"answer":"繁體中文回答","cites":[{"type":"rule","id":數字,"quote":"原文"},{"type":"ruling","id":數字,"quote":"原文"},{"type":"card","id":數字,"quote":"原文"}]}
+{"refused":布林,"answer":"繁體中文回答","cites":[{"type":"rule","id":數字,"sents":[句子編號]},{"type":"ruling","id":數字,"sents":[句子編號]},{"type":"card","id":數字,"sents":[句子編號]}]}
 
 必須遵守的規則：
 1. **回答用繁體中文**，但引用依據裡的原文時**一字不改地照抄**，不要翻譯、不要改寫。
@@ -104,9 +104,9 @@ ${question}
    「同理」「換言之」。** 一條裁定問的是 A 情境，就只能拿來回答 A 情境；
    你想用「它說 A 不行，所以暗示 B 可以」把它延伸到使用者問的 B，那就是組合推論，
    該拒答，不是該寫「暗示」。
-10. ⚠️ **每一個 cites 都要附 quote：從該條依據裡一字不改地抄一段支持你結論的原文**
-    （至少 8 個字，不要翻譯、不要改寫、不要省略中間的字）。程式會拿 quote 去比對該條依據
-    的原文，對不上的整個回答作廢。抄不出一段直接支持結論的原文，就代表這條依據不能用。
+10. ⚠️ **依據的每一句前面都有編號，形如 ⟦3⟧。** 每一個 cites 都要在 sents 填入
+    直接支持你結論的那幾句的編號（至多 5 句）。**只填編號，不要自己寫引文** ——
+    程式會用編號取回原文。沒有任何一句直接支持結論，就代表這條依據不能用。
 11. answer 控制在 800 字以內。`;
 
 // 組合推論的口頭禪。⚠️ 這只是**訊號**不是判決：正常回答也可能剛好用到這些字，
@@ -137,6 +137,31 @@ function quote_in(evidence, quote) {
 		at = i + f.length;
 	}
 	return 'ok';
+}
+
+/**
+ * 把一條依據切成句子並編號。模型只回報編號，引文由程式取回 ——
+ * 存在的編號取回來的一定是原文，所以引文不可能被編造或改寫。
+ * （仍保留 quote_in 給沒照格式、自己寫 quote 的輸出。）
+ */
+const MAX_SENTS = 5;
+function split_sents(text) {
+	const out = [];
+	for (const piece of (text ?? '').split(/(?<=[。！？!?；;\n])/)) {
+		const t = piece.trim();
+		if (!t)
+			continue;
+		// 太短的殘片（單獨一個「」」之類）併回前一句，不佔編號
+		if (out.length && t.length < 6)
+			out[out.length - 1] += t;
+		else
+			out.push(t);
+	}
+	return out;
+}
+function numbered(text) {
+	const sents = split_sents(text);
+	return { sents, view: sents.map((t, i) => `⟦${i + 1}⟧${t}`).join('\n') };
 }
 
 const HEDGE_WORDS = ['暗示', '可推知', '可以推知', '推測', '類推', '同理', '換言之', '應該是', '一般來說'];
@@ -257,7 +282,15 @@ export async function answer_question(question, opts = {}) {
 	// temperature 0：同一題要得到同一個結論。0.2 時 rules-012 連跑五次是
 	// 可以 2／不能 1／拒答 2，等於擲骰子。⚠️ 一致不等於正確 —— 它只是讓
 	// 錯誤可重現、可以被評測抓到。
-	const ans_res = await generate(ANSWER_PROMPT(question, rules, ruling_ctx, card_ctx),
+	const rules_n = rules.map(r => ({ ...r, ...numbered(r.body) }));
+	const rulings_n = ruling_ctx.map(r => ({ ...r, ...numbered(`Q: ${r.question}\nA: ${r.answer ?? '（未取得全文）'}`) }));
+	const cards_n = card_ctx.map(c => ({ ...c, ...numbered(c.text) }));
+	const sent_map = {
+		rule: new Map(rules_n.map(r => [r.id, r.sents])),
+		ruling: new Map(rulings_n.map(r => [r.fid, r.sents])),
+		card: new Map(cards_n.map(c => [c.id, c.sents])),
+	};
+	const ans_res = await generate(ANSWER_PROMPT(question, rules_n, rulings_n, cards_n),
 		{ stage: 'answer', json: true, max_tokens: 8192, thinking_budget: 2048, temperature: 0, ...gen });
 	if (ans_res.error)
 		return { ...base, cards: resolved, refused: true, answer: '目前無法查詢，請稍後再試。', error: ans_res.error };
@@ -276,6 +309,7 @@ export async function answer_question(question, opts = {}) {
 	const cites = Array.isArray(parsed.cites) ? parsed.cites : [];
 	const dropped = [];
 	const bad_quotes = [];
+	const quotes = [];
 	// 每條依據的原文（正規化後），給 quote 比對用。
 	const evidence = {
 		rule: new Map(rules.map(r => [r.id, norm_quote(`${r.path}
@@ -304,9 +338,26 @@ ${c.text}`)])),
 		}
 		// ⚠️ 編號對得上還不夠 —— 引文也要真的出現在那條依據裡。
 		//    編號是真的、內容是編的，比編號是假的更難發現。
-		const verdict = quote_in(evidence[c.type].get(n) ?? '', c.quote);
+		let verdict;
+		if (Array.isArray(c.sents)) {
+			const all = sent_map[c.type].get(n) ?? [];
+			const idx = [...new Set(c.sents.map(Number))].sort((a, b) => a - b);
+			if (!idx.length || idx.length > MAX_SENTS)
+				verdict = 'short';
+			else if (idx.some(i => !Number.isInteger(i) || i < 1 || i > all.length))
+				verdict = 'missing';
+			else {
+				verdict = 'ok';
+				quotes.push({ type: c.type, id: n, quote: idx.map(i => all[i - 1]).join('\n') });
+			}
+		}
+		else {
+			verdict = quote_in(evidence[c.type].get(n) ?? '', c.quote);
+			if (verdict === 'ok')
+				quotes.push({ type: c.type, id: n, quote: c.quote });
+		}
 		if (verdict !== 'ok') {
-			const why = verdict === 'short' ? '沒附引文或太短' : '引文在該依據裡找不到';
+			const why = verdict === 'short' ? '沒附句子編號或太多句' : '句子編號不存在或引文找不到';
 			bad_quotes.push(`${c.type}:${n}（${why}）`);
 			dropped.push(JSON.stringify(c));
 			continue;
@@ -347,8 +398,9 @@ ${c.text}`)])),
 	return {
 		model: model_name(),
 		refused,
-		answer: parsed.answer.trim(),
-		rule_ids, ruling_fids, card_ids, cards: resolved, debug,
+		// 模型有時會把 ⟦3⟧ 這種編號寫進回答文字，對使用者沒意義，去掉
+		answer: parsed.answer.replace(/⟦\d+⟧/g, '').trim(),
+		rule_ids, ruling_fids, card_ids, cards: resolved, debug, quotes,
 		...(dropped.length ? { dropped } : {}),
 		...(hedges.length ? { hedges } : {}),
 	};
