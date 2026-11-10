@@ -47,6 +47,10 @@ const RATE = {
 	PER_MINUTE: Number(process.env.GEMINI_RPM) || UNLIMITED,
 	PER_DAY: Number(process.env.GEMINI_RPD) || UNLIMITED,
 	MAX_RETRY: 2,
+	// 撞到每分鐘配額時，互動中的使用者最多願意等多久（毫秒，一次 generate 呼叫內累計）。
+	// 每分鐘配額的 retryDelay 通常 20–60 秒；/ask 本來就要 20–35 秒而且已經 defer，
+	// 等一次比直接回「目前無法查詢」好。每日配額不會走到這裡（上面先擋掉了）。
+	INTERACTIVE_MAX_WAIT_MS: Number(process.env.GEMINI_MAX_WAIT_MS) || 60_000,
 };
 
 const db = new DatabaseSync(new URL('./db/ruling.db', import.meta.url).pathname);
@@ -192,6 +196,7 @@ export async function generate(prompt, opts = {}) {
 	};
 
 	let last_429 = '';
+	let waited = 0;
 	for (let attempt = 0; attempt <= RATE.MAX_RETRY; attempt++) {
 		const wait = wait_ms('gemini', RATE.MIN_INTERVAL_MS);
 		if (wait > 0)
@@ -225,12 +230,12 @@ export async function generate(prompt, opts = {}) {
 				stmt_bump.run(today(), 1, 0, 1);
 				return { error: `節流：每日上限（Google 回報 ${value || '未知'} 次/天，${quota}），台灣時間 ${reset_text()} 重置` };
 			}
-			// 互動中的使用者等不了一分鐘，批次評測可以。
-			const cap = opts.wait_for_slot ? 70_000 : 5_000;
+			// cap 是這次呼叫累計願意等的總時間，不是單次 —— 否則兩次重試各等 60 秒就是兩分鐘。
+			const cap = opts.wait_for_slot ? 70_000 : RATE.INTERACTIVE_MAX_WAIT_MS;
 			const need = delay_ms || 2000 * (attempt + 1);
-			// 要求等的時間超過上限就不重試了 —— 那通常是每日配額，
-			// 硬等下去只是讓使用者多盯著「思考中」而已。
-			if (attempt < RATE.MAX_RETRY && need <= cap) {
+			// 要求等的時間超過剩餘額度就不重試了 —— 硬等下去只是讓使用者多盯著「思考中」。
+			if (attempt < RATE.MAX_RETRY && waited + need <= cap) {
+				waited += need;
 				await sleep(need);
 				continue;
 			}
