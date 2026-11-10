@@ -24,8 +24,23 @@ const ALLOW_FETCH = process.argv.includes('--fetch');
 //    四五分鐘，還吃免費層配額。預設只跑不花錢的結構檢查，這樣「改完跑一下」
 //    才會真的變成習慣 —— 要錢又要等的檢查，人就不會跑。
 const ALLOW_LLM = process.argv.includes('--llm');
-const ONLY = (process.argv.find(a => a.startsWith('--only=')) ?? '').slice(7);
+// --only= 可用逗號分隔多個，每一項是題目 id 的子字串：
+//   --only=rules-011,rules-012,refuse-001   只跑這三題
+//   --only=rules-00                          跑 rules-001～009
+const ONLY = (process.argv.find(a => a.startsWith('--only=')) ?? '').slice(7)
+	.split(',').map(s => s.trim()).filter(Boolean);
 const answers = [];
+// 拒答原因統計（見 ygo-answer.mjs 回傳的 reason）。要算「誤拒答率」時，
+// 光知道拒答了不夠 —— 是模型自己拒、引文驗證擋的、還是相關性檢查擋的，意義完全不同。
+const REASON_TEXT = {
+	model: '模型自己拒答',
+	bad_quote: '引文驗證失敗（編造或亂改）',
+	mention_gap: '提到規則／裁定卻沒有對應引用',
+	relevance: '相關性檢查未通過',
+	no_cite: '沒有任何有效引用',
+	no_evidence: '沒有可用的依據（章節與裁定都沒命中）',
+};
+const refusal_tally = new Map();
 const spec = JSON.parse(readFileSync(new URL('./cases.json', import.meta.url), 'utf8'));
 const rules_spec = JSON.parse(readFileSync(new URL('./rules-cases.json', import.meta.url), 'utf8'));
 const all_cases = [...spec.cases, ...rules_spec.cases];
@@ -170,6 +185,8 @@ async function run_rules(c) {
 	}
 
 	answers.push({ id: c.id, question: c.question, gold: c.gold, r });
+	if (r.refused && r.reason)
+		refusal_tally.set(r.reason, [...(refusal_tally.get(r.reason) ?? []), c.id]);
 
 	const e = c.expect ?? {};
 	const bad = [];
@@ -177,7 +194,7 @@ async function run_rules(c) {
 	if (e.must_refuse === true && !r.refused)
 		bad.push('預期拒答，實際給了結論');
 	if (e.must_refuse === false && r.refused)
-		bad.push('不該拒答卻拒答了');
+		bad.push(`不該拒答卻拒答了（原因：${REASON_TEXT[r.reason] ?? r.reason ?? '未標示'}）`);
 
 	// 結論不可以是這個樣子。⚠️ 只在**沒拒答**時檢查 —— 拒答的字面裡可能剛好有
 	//    「可以」，而拒答本來就是可接受的結果。用正規表達式是因為「可以發動」
@@ -218,7 +235,7 @@ async function run_rules(c) {
 console.log(`評測集：${all_cases.length} 題${ALLOW_FETCH ? '（允許連外抓取）' : '（純快取，不連外）'}\n`);
 
 for (const c of all_cases) {
-	if (ONLY && !c.id.includes(ONLY))
+	if (ONLY.length && !ONLY.some(o => c.id.includes(o)))
 		continue;
 	if (c.draft) {
 		results.draft++;
@@ -282,10 +299,21 @@ if (answers.length) {
 		console.log(`--- ${a.id}`);
 		console.log(`  問  ${a.question}`);
 		console.log(`  答  ${a.r.answer.split(String.fromCharCode(10)).join(' ')}`);
-		console.log(`  引用 規則[${a.r.rule_ids.join(',') || '無'}] 裁定[${a.r.ruling_fids.join(',') || '無'}] 拒答=${a.r.refused}`);
+		console.log(`  引用 規則[${a.r.rule_ids.join(',') || '無'}] 裁定[${a.r.ruling_fids.join(',') || '無'}] 拒答=${a.r.refused}${a.r.reason ? `（${REASON_TEXT[a.r.reason] ?? a.r.reason}）` : ''}`);
+		// 程式取回的實際引文：引文是真的，但它支不支持結論要靠人對照 gold 判斷。
+		// 拒答時（相關性檢查擋下）這裡也會有，正好看它擋掉的是什麼。
+		const label = { rule: '規則', ruling: '裁定', card: '卡片' };
+		for (const q of a.r.quotes ?? [])
+			console.log(`    ${label[q.type] ?? q.type} ${q.id}：${q.quote.split(String.fromCharCode(10)).join(' ').slice(0, 140)}`);
 		if (a.gold)
 			console.log(`  gold ${a.gold.split(String.fromCharCode(10)).join(' ')}`);
 	}
+}
+
+if (refusal_tally.size) {
+	console.log('\n=== 拒答原因統計 ===');
+	for (const [reason, ids] of refusal_tally)
+		console.log(`  ${REASON_TEXT[reason] ?? reason}：${ids.length} 題（${ids.join('、')}）`);
 }
 
 if (failures.length) {
