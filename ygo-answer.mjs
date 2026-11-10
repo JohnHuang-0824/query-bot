@@ -402,7 +402,7 @@ export async function answer_question(question, opts = {}) {
 
 	if (!rules.length && !ruling_ctx.length && !card_ctx.length) {
 		return {
-			...base, cards: resolved, refused: true, debug,
+			...base, cards: resolved, refused: true, reason: 'no_evidence', debug,
 			answer: '查無可用的依據（規則章節與官方裁定都沒有命中）。這不代表可以自行推論結果 —— 請洽裁判或官方事務局。',
 		};
 	}
@@ -455,7 +455,7 @@ export async function answer_question(question, opts = {}) {
 	if (!refused && bad_quotes.length) {
 		console.warn(`[ask] 引文驗證失敗 ${bad_quotes.join('、')}｜問題：${question}`);
 		return {
-			...base, cards: resolved, refused: true, dropped, debug,
+			...base, cards: resolved, refused: true, reason: 'bad_quote', dropped, debug,
 			answer: '回答的引文無法對回依據原文，因此不提供結論 —— 請洽裁判或官方事務局。',
 		};
 	}
@@ -468,7 +468,7 @@ export async function answer_question(question, opts = {}) {
 		if (missing.length) {
 			console.warn(`[ask] 回答提到${missing.join('、')}但沒有對應引用｜問題：${question}`);
 			return {
-				...base, cards: resolved, refused: true, dropped, debug,
+				...base, cards: resolved, refused: true, reason: 'mention_gap', dropped, debug,
 				answer: `回答聲稱依據${missing.join('、')}，但沒有對應的有效引用，因此不提供結論 —— 請洽裁判或官方事務局。`,
 			};
 		}
@@ -485,7 +485,7 @@ export async function answer_question(question, opts = {}) {
 		if (bad.length) {
 			console.warn(`[ask] 相關性檢查未通過 ${bad.join('、')}｜問題：${question}`);
 			return {
-				...base, cards: resolved, refused: true, dropped, debug, quotes,
+				...base, cards: resolved, refused: true, reason: 'relevance', dropped, debug, quotes,
 				answer: '引用的依據沒有直接涵蓋你問的情況，因此不提供結論 —— 請洽裁判或官方事務局。',
 			};
 		}
@@ -496,14 +496,14 @@ export async function answer_question(question, opts = {}) {
 	//    而使用者分不出來。
 	if (!refused && !rule_ids.length && !ruling_fids.length && !card_ids.length) {
 		return {
-			...base, cards: resolved, refused: true, dropped, debug,
+			...base, cards: resolved, refused: true, reason: 'no_cite', dropped, debug,
 			answer: '這題找不到可以對應的依據，因此不提供結論 —— 請洽裁判或官方事務局。',
 		};
 	}
 
 	return {
 		model: model_name(),
-		refused,
+		refused, ...(refused ? { reason: 'model' } : {}),
 		// 模型有時會把 ⟦3⟧ 這種編號寫進回答文字，對使用者沒意義，去掉
 		answer: strip_marks(parsed.answer).trim(),
 		rule_ids, ruling_fids, card_ids, cards: resolved, debug, quotes,
