@@ -113,7 +113,9 @@ const stmt_by_cid = db.prepare(`
 	SELECT r.fid, r.question, r.answer, r.updated_at
 	FROM ruling_card rc JOIN ruling r ON r.fid = rc.fid
 	WHERE rc.cid = ?
-	ORDER BY r.updated_at DESC
+	-- ⚠️ 同日期的裁定很多，只排 updated_at 的話平手的順序沒有保證；
+	--    作答只取前 MAX_RULINGS 條，邊界上的平手會讓同一題送進去的證據不一樣。
+	ORDER BY r.updated_at DESC, r.fid DESC
 `);
 const stmt_fetch_state = db.prepare('SELECT fetched_at, total, complete FROM card_fetch WHERE cid = ?');
 const stmt_get_ruling = db.prepare('SELECT fid, question, answer, updated_at FROM ruling WHERE fid = ?');
