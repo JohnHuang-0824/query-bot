@@ -23,7 +23,14 @@ services:
       # 第 4 階段的繁中解釋層。
       # ⚠️ 要另開 Google Cloud 專案，不要跟其他專案共用免費層配額。
       # LLM_PROVIDER=gemini（預設）或 claude。換供應者要重跑評測。
+      # 兩段可分開指定（留空 = 跟 LLM_PROVIDER 一樣）。⚠️ 沒列在這裡的變數
+      # 不會進容器，.env 填了也沒用。Ollama 是本機開發用，Pi 上不接。
       LLM_PROVIDER: ${LLM_PROVIDER:-gemini}
+      LLM_PROVIDER_SELECT:     ${LLM_PROVIDER_SELECT:-}
+      LLM_PROVIDER_ANSWER:     ${LLM_PROVIDER_ANSWER:-}
+      # 1 = 答案通過引用驗證後，再多一次模型呼叫檢查引文是否直接涵蓋問題。
+      # 預設關閉：每題多一次呼叫（Gemini 免費層每天 20 次會更快用完）。
+      ASK_RELEVANCE_CHECK:     ${ASK_RELEVANCE_CHECK:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       # ⚠️ 預設值一度寫成 gemini-3-flash —— **那個名字不存在**（是
       #    gemini-3-flash-preview）。.env 沒設 GEMINI_MODEL 的話，Pi 上

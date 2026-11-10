@@ -35,6 +35,26 @@ cp .env.example .env
 
 四個都要填。`GUILD_ID` 是**你自己的私人測試伺服器**。
 
+#### `/ask` 的模型設定（選填，預設用 Gemini）
+
+`/ask` 每題先呼叫一次模型挑規則章節與卡名（第一段），再呼叫一次作答（第二段）。
+供應者用環境變數切換，**換供應者等於換模型，要重跑評測用數字比較**：
+
+| 變數 | 說明 |
+|---|---|
+| `LLM_PROVIDER` | `gemini`（預設）｜`claude`｜`ollama`（本機，只在開發用） |
+| `LLM_PROVIDER_SELECT` / `LLM_PROVIDER_ANSWER` | 兩段分開指定，留空 = 跟 `LLM_PROVIDER` 一樣 |
+| `GEMINI_API_KEY` | Gemini 免費層實測每天只有 20 次請求，也就是全服一天 10 題。本機上限預設不設，撞到 Google 的 429 才記下對方回報的上限 |
+| `ANTHROPIC_API_KEY` | Claude 訂閱不含 API 額度，要另外在 console 儲值。第一段預設 Haiku、第二段預設 Sonnet。⚠️ 這條路徑還沒用真的金鑰測過 |
+| `ASK_RELEVANCE_CHECK=1` | 多一次呼叫檢查引文是否直接涵蓋問題。拒答會變多，但擋得住拼湊推論。預設關閉 |
+| `ASK_PER_USER_PER_DAY` | 每人每日提問上限，預設 3，0 = 不限制 |
+
+Ollama（`OLLAMA_*`）只給本機開發跑評測用：實測 qwen3:8b 當第二段，引文驗證現在多半能過，
+但推論仍會拼湊，不適合正式作答。細節與注意事項（`OLLAMA_NUM_CTX` 至少 32768）見 `.env.example`。
+
+⚠️ Pi 的容器只會收到 `docker-compose.pi.yml` 的 `environment:` 裡列出的變數，
+`.env` 填了但 compose 沒列就不會生效。Pi 上沒有 Ollama 的設定，這是刻意的。
+
 ### 3. 跑起來
 
 ```bash
