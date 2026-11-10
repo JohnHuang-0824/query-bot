@@ -435,6 +435,8 @@ export async function answer_question(question, opts = {}) {
 	// 這是整個檔案的重點。模型「引用」了一個我們沒送進去的編號，代表它
 	// 在編 —— 那種回答比沒有回答危險得多，因為它看起來有出處。
 	const cites = Array.isArray(parsed.cites) ? parsed.cites : [];
+	if (process.env.YGO_DEBUG)
+		console.log(`[ask] 模型的 cites：${JSON.stringify(cites)}`);
 	// 每條依據的原文（正規化後），給沒照格式、自己寫 quote 的輸出比對用。
 	const evidence = {
 		rule: new Map(rules.map(r => [r.id, norm_quote(`${r.path}\n${r.body}`)])),
