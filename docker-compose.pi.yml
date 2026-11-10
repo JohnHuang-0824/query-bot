@@ -42,6 +42,8 @@ services:
       # 所以全服每天 10 題。開了付費層再往上調，不用改程式。
       GEMINI_RPD:              ${GEMINI_RPD:-}
       GEMINI_RPM:              ${GEMINI_RPM:-}
+      # 撞到每分鐘 429 時願意等的總時間（毫秒）。留空 = 60000。
+      GEMINI_MAX_WAIT_MS:      ${GEMINI_MAX_WAIT_MS:-}
       # Claude（LLM_PROVIDER=claude 時用）。兩段用不同模型，版本釘死。
       ANTHROPIC_API_KEY:       ${ANTHROPIC_API_KEY:-}
       CLAUDE_MODEL_SELECT:     ${CLAUDE_MODEL_SELECT:-claude-haiku-4-5-20251001}
