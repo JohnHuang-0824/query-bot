@@ -267,7 +267,7 @@ for (const c of all_cases) {
 }
 
 console.log(`
-通過 ${results.pass}　失敗 ${results.fail}　跳過 ${results.skip}　草稿 ${results.draft}　待人工 ${results.manual}`);
+通過 ${results.pass}\u3000失敗 ${results.fail}\u3000跳過 ${results.skip}\u3000草稿 ${results.draft}\u3000待人工 ${results.manual}`);
 
 if (quota_dead) {
 	console.log(`

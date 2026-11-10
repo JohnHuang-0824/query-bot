@@ -1,4 +1,4 @@
-import { SlashCommandBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, MessageFlags } from 'discord.js';
+import { SlashCommandBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } from 'discord.js';
 import { answer_question } from '../ygo-answer.mjs';
 import { get_section, section_url } from '../ygo-rules.mjs';
 import { get_ruling } from '../ygo-ruling.mjs';
