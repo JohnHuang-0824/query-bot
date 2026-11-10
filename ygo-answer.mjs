@@ -81,7 +81,7 @@ ${cards.length ? cards.map(c => `[卡片 ${c.id}] ${c.name}\n${c.view}`).join('\
 ${question}
 
 請輸出 JSON，不要有其他文字：
-{"refused":布林,"answer":"繁體中文回答","cites":[{"type":"rule","id":數字,"sents":[句子編號]},{"type":"ruling","id":數字,"sents":[句子編號]},{"type":"card","id":數字,"sents":[句子編號]}]}
+{"refused":布林,"answer":"繁體中文回答","cites":[{"type":"rule","id":數字,"sents":["R數字-句號"]},{"type":"ruling","id":數字,"sents":["J數字-句號"]},{"type":"card","id":數字,"sents":["C數字-句號"]}]}
 
 必須遵守的規則：
 1. **回答用繁體中文**，但引用依據裡的原文時**一字不改地照抄**，不要翻譯、不要改寫。
@@ -104,9 +104,10 @@ ${question}
    「同理」「換言之」。** 一條裁定問的是 A 情境，就只能拿來回答 A 情境；
    你想用「它說 A 不行，所以暗示 B 可以」把它延伸到使用者問的 B，那就是組合推論，
    該拒答，不是該寫「暗示」。
-10. ⚠️ **依據的每一句前面都有編號，形如 ⟦3⟧。** 每一個 cites 都要在 sents 填入
-    直接支持你結論的那幾句的編號（至多 5 句）。**只填編號，不要自己寫引文** ——
-    程式會用編號取回原文。沒有任何一句直接支持結論，就代表這條依據不能用。
+10. ⚠️ **依據的每一句前面都有編號，形如 ⟦R21-3⟧（R 規則、J 裁定、C 卡片，後面是該條的編號與句號）。**
+    每一個 cites 都要在 sents 填入直接支持你結論的那幾句的編號，寫成 "R21-3"（至多 5 句）。
+    **只填編號，不要自己寫引文** —— 程式會用編號取回原文。沒有任何一句直接支持結論，
+    就代表這條依據不能用。
     **answer 的文字裡不要出現 ⟦ ⟧ 編號**；回答若提到「規則」或「裁定」，cites 就必須有對應的 rule／ruling。
 11. answer 控制在 800 字以內。`;
 
@@ -146,7 +147,7 @@ function quote_in(evidence, quote) {
  * （仍保留 quote_in 給沒照格式、自己寫 quote 的輸出。）
  */
 const MAX_SENTS = 5;
-function split_sents(text) {
+export function split_sents(text) {
 	const out = [];
 	for (const piece of (text ?? '').split(/(?<=[。！？!?；;\n])/)) {
 		const t = piece.trim();
@@ -160,9 +161,102 @@ function split_sents(text) {
 	}
 	return out;
 }
-function numbered(text) {
+// ⚠️ 編號要帶來源（R21-3），不能每條依據都從 1 重編 —— 否則模型會把 A 條的 ⟦3⟧
+//    當成 B 條的，而且還對得上（每條都有第 3 句），引用就悄悄指向別的句子。
+export function numbered(text, tag) {
 	const sents = split_sents(text);
-	return { sents, view: sents.map((t, i) => `⟦${i + 1}⟧${t}`).join('\n') };
+	return { sents, view: sents.map((t, i) => `⟦${tag}-${i + 1}⟧${t}`).join('\n') };
+}
+
+const KIND = { R: 'rule', J: 'ruling', C: 'card' };
+export const strip_marks = t => (t ?? '').replace(/⟦[^⟧]*⟧/g, '');
+
+/**
+ * 驗證模型的 cites。純函式，不碰模型，測試直接餵進來。
+ *
+ * sent_map：{ rule|ruling|card: Map(編號 → 句子陣列) }，也就是「我們送進去的依據」。
+ * evidence：同形，值是正規化後的整段原文，給沒照格式、自己寫 quote 的輸出用。
+ *
+ * 編號帶來源（R21-3）時，引文取自編號指的那一句，**不看 cite 自己寫的 id** ——
+ * 句子是真的、也確實送過，只是歸屬要照它真正所在的那條依據。
+ * 裸數字（3）沿用 cite 自己指的那一條。
+ */
+export function verify_cites(cites, { sent_map, evidence }) {
+	const out = { rule_ids: [], ruling_fids: [], card_ids: [], quotes: [], dropped: [], bad_quotes: [] };
+	const bucket = { rule: out.rule_ids, ruling: out.ruling_fids, card: out.card_ids };
+	const add = (type, id) => {
+		if (!bucket[type].includes(id))
+			bucket[type].push(id);
+	};
+	for (const c of cites) {
+		// ⚠️ 編號欄位名要寬容，**允許的編號集合要嚴格**。
+		//    prompt 裡規則用 id、裁定用 fid，模型實測會把兩者都寫成 id ——
+		//    踩過一次：fid 24022 確實有送進去，卻被當成編造，整個正確的回答被作廢。
+		//    認錯欄位名不是編造，只有「這個編號我們沒送過」才是。
+		const n = Number(c?.fid ?? c?.id);
+		if (!sent_map[c?.type]?.has(n)) {
+			out.dropped.push(JSON.stringify(c));
+			continue;
+		}
+		// ⚠️ 編號對得上還不夠 —— 引文也要真的出現在那條依據裡。
+		let verdict = 'ok';
+		const found = [];
+		if (Array.isArray(c.sents)) {
+			const toks = [...new Set(c.sents.map(x => String(x).replace(/[⟦⟧\s]/g, '').toUpperCase()))].filter(Boolean);
+			if (!toks.length || toks.length > MAX_SENTS)
+				verdict = 'short';
+			else {
+				const picks = new Map();
+				for (const t of toks) {
+					const m = /^(?:([RJC])(\d+)-)?(\d+)$/.exec(t);
+					const type = m ? (m[1] ? KIND[m[1]] : c.type) : null;
+					const id = m ? (m[1] ? Number(m[2]) : n) : null;
+					const all = type && sent_map[type]?.get(id);
+					const i = m ? Number(m[3]) : 0;
+					if (!all || i < 1 || i > all.length) {
+						verdict = 'missing';
+						break;
+					}
+					const key = `${type}:${id}`;
+					if (!picks.has(key))
+						picks.set(key, { type, id, idx: new Set() });
+					picks.get(key).idx.add(i);
+				}
+				if (verdict === 'ok') {
+					for (const { type, id, idx } of picks.values()) {
+						const all = sent_map[type].get(id);
+						found.push({ type, id, quote: [...idx].sort((a, b) => a - b).map(i => all[i - 1]).join('\n') });
+					}
+				}
+			}
+		}
+		else {
+			verdict = quote_in(evidence[c.type].get(n) ?? '', c.quote);
+			if (verdict === 'ok')
+				found.push({ type: c.type, id: n, quote: c.quote });
+		}
+		if (verdict !== 'ok') {
+			const why = verdict === 'short' ? '沒附句子編號或太多句' : '句子編號不存在或引文找不到';
+			out.bad_quotes.push(`${c.type}:${n}（${why}）`);
+			out.dropped.push(JSON.stringify(c));
+			continue;
+		}
+		for (const f of found) {
+			out.quotes.push(f);
+			add(f.type, f.id);
+		}
+	}
+	return out;
+}
+
+/** 回答提到「規則」「裁定」卻沒有對應有效引用時，回傳缺的那幾項。 */
+export function mention_gaps(answer, rule_ids, ruling_fids) {
+	const missing = [];
+	if (/規則|OCG ?Rule/i.test(answer) && !rule_ids.length)
+		missing.push('規則');
+	if (/裁定/.test(answer) && !ruling_fids.length)
+		missing.push('裁定');
+	return missing;
 }
 
 const JUDGE_PROMPT = (question, answer, quotes) => `你是嚴格的引文審查員。下面是使用者的問題、一個回答，以及回答所引用的原文。
@@ -186,8 +280,8 @@ ${quotes.map((q, i) => `(${i + 1}) [${q.type} ${q.id}]\n${q.quote}`).join('\n\n'
 只輸出 JSON：{"results":[{"n":1,"direct":布林},{"n":2,"direct":布林}]}，每段原文一筆。`;
 
 /** 回傳沒通過的引文標記；空陣列＝全部通過。 */
-async function check_relevance(question, answer, quotes, gen) {
-	const res = await generate(JUDGE_PROMPT(question, answer.replace(/⟦\d+⟧/g, ''), quotes),
+export async function check_relevance(question, answer, quotes, gen, gen_fn = generate) {
+	const res = await gen_fn(JUDGE_PROMPT(question, strip_marks(answer), quotes),
 		{ stage: 'answer', json: true, max_tokens: 2048, thinking_budget: 512, temperature: 0, ...gen });
 	if (process.env.YGO_DEBUG)
 		console.log(`[ask] 相關性審查原始輸出：${res.error ?? res.text}`);
@@ -319,9 +413,9 @@ export async function answer_question(question, opts = {}) {
 	// temperature 0：同一題要得到同一個結論。0.2 時 rules-012 連跑五次是
 	// 可以 2／不能 1／拒答 2，等於擲骰子。⚠️ 一致不等於正確 —— 它只是讓
 	// 錯誤可重現、可以被評測抓到。
-	const rules_n = rules.map(r => ({ ...r, ...numbered(r.body) }));
-	const rulings_n = ruling_ctx.map(r => ({ ...r, ...numbered(`Q: ${r.question}\nA: ${r.answer ?? '（未取得全文）'}`) }));
-	const cards_n = card_ctx.map(c => ({ ...c, ...numbered(c.text) }));
+	const rules_n = rules.map(r => ({ ...r, ...numbered(r.body, `R${r.id}`) }));
+	const rulings_n = ruling_ctx.map(r => ({ ...r, ...numbered(`Q: ${r.question}\nA: ${r.answer ?? '（未取得全文）'}`, `J${r.fid}`) }));
+	const cards_n = card_ctx.map(c => ({ ...c, ...numbered(c.text, `C${c.id}`) }));
 	const sent_map = {
 		rule: new Map(rules_n.map(r => [r.id, r.sents])),
 		ruling: new Map(rulings_n.map(r => [r.fid, r.sents])),
@@ -340,72 +434,14 @@ export async function answer_question(question, opts = {}) {
 	//
 	// 這是整個檔案的重點。模型「引用」了一個我們沒送進去的編號，代表它
 	// 在編 —— 那種回答比沒有回答危險得多，因為它看起來有出處。
-	const rule_ok = new Set(rules.map(r => r.id));
-	const ruling_ok = new Set(ruling_ctx.map(r => r.fid));
-	const card_ok = new Set(card_ctx.map(c => c.id));
 	const cites = Array.isArray(parsed.cites) ? parsed.cites : [];
-	const dropped = [];
-	const bad_quotes = [];
-	const quotes = [];
-	// 每條依據的原文（正規化後），給 quote 比對用。
+	// 每條依據的原文（正規化後），給沒照格式、自己寫 quote 的輸出比對用。
 	const evidence = {
-		rule: new Map(rules.map(r => [r.id, norm_quote(`${r.path}
-${r.body}`)])),
-		ruling: new Map(ruling_ctx.map(r => [r.fid, norm_quote(`${r.question}
-${r.answer ?? ''}`)])),
-		card: new Map(card_ctx.map(c => [c.id, norm_quote(`${c.name}
-${c.text}`)])),
+		rule: new Map(rules.map(r => [r.id, norm_quote(`${r.path}\n${r.body}`)])),
+		ruling: new Map(ruling_ctx.map(r => [r.fid, norm_quote(`${r.question}\n${r.answer ?? ''}`)])),
+		card: new Map(card_ctx.map(c => [c.id, norm_quote(`${c.name}\n${c.text}`)])),
 	};
-	const rule_ids = [];
-	const ruling_fids = [];
-	const card_ids = [];
-	// ⚠️ 編號欄位名要寬容，**允許的編號集合要嚴格**。
-	//    prompt 裡規則用 id、裁定用 fid，模型實測會把兩者都寫成 id ——
-	//    踩過一次：fid 24022（炎王の聖域 × 羽根帚，確實有送進去）被當成
-	//    編造，整個正確的回答被作廢成拒答。認錯欄位名不是編造，只有
-	//    「這個編號我們沒送過」才是。
-	for (const c of cites) {
-		const n = Number(c?.fid ?? c?.id);
-		const ok = (c?.type === 'rule' && rule_ok.has(n))
-			|| (c?.type === 'ruling' && ruling_ok.has(n))
-			|| (c?.type === 'card' && card_ok.has(n));
-		if (!ok) {
-			dropped.push(JSON.stringify(c));
-			continue;
-		}
-		// ⚠️ 編號對得上還不夠 —— 引文也要真的出現在那條依據裡。
-		//    編號是真的、內容是編的，比編號是假的更難發現。
-		let verdict;
-		if (Array.isArray(c.sents)) {
-			const all = sent_map[c.type].get(n) ?? [];
-			const idx = [...new Set(c.sents.map(Number))].sort((a, b) => a - b);
-			if (!idx.length || idx.length > MAX_SENTS)
-				verdict = 'short';
-			else if (idx.some(i => !Number.isInteger(i) || i < 1 || i > all.length))
-				verdict = 'missing';
-			else {
-				verdict = 'ok';
-				quotes.push({ type: c.type, id: n, quote: idx.map(i => all[i - 1]).join('\n') });
-			}
-		}
-		else {
-			verdict = quote_in(evidence[c.type].get(n) ?? '', c.quote);
-			if (verdict === 'ok')
-				quotes.push({ type: c.type, id: n, quote: c.quote });
-		}
-		if (verdict !== 'ok') {
-			const why = verdict === 'short' ? '沒附句子編號或太多句' : '句子編號不存在或引文找不到';
-			bad_quotes.push(`${c.type}:${n}（${why}）`);
-			dropped.push(JSON.stringify(c));
-			continue;
-		}
-		if (c.type === 'rule')
-			rule_ids.push(n);
-		else if (c.type === 'ruling')
-			ruling_fids.push(n);
-		else
-			card_ids.push(n);
-	}
+	const { rule_ids, ruling_fids, card_ids, quotes, dropped, bad_quotes } = verify_cites(cites, { sent_map, evidence });
 
 	const refused = parsed.refused === true;
 	const hedges = refused ? [] : find_hedges(parsed.answer);
@@ -426,11 +462,7 @@ ${c.text}`)])),
 	// ⚠️ 只靠卡片效果文本的引用撐起來的回答，不能宣稱有規則依據
 	//    （實測 qwen3 會這樣：只引卡片，卻寫「依據規則文件」）。
 	if (!refused) {
-		const missing = [];
-		if (/規則|OCG ?Rule/i.test(parsed.answer) && !rule_ids.length)
-			missing.push('規則');
-		if (/裁定/.test(parsed.answer) && !ruling_fids.length)
-			missing.push('裁定');
+		const missing = mention_gaps(parsed.answer, rule_ids, ruling_fids);
 		if (missing.length) {
 			console.warn(`[ask] 回答提到${missing.join('、')}但沒有對應引用｜問題：${question}`);
 			return {
@@ -471,7 +503,7 @@ ${c.text}`)])),
 		model: model_name(),
 		refused,
 		// 模型有時會把 ⟦3⟧ 這種編號寫進回答文字，對使用者沒意義，去掉
-		answer: parsed.answer.replace(/⟦\d+⟧/g, '').trim(),
+		answer: strip_marks(parsed.answer).trim(),
 		rule_ids, ruling_fids, card_ids, cards: resolved, debug, quotes,
 		...(dropped.length ? { dropped } : {}),
 		...(hedges.length ? { hedges } : {}),
