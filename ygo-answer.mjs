@@ -165,6 +165,42 @@ function numbered(text) {
 	return { sents, view: sents.map((t, i) => `⟦${i + 1}⟧${t}`).join('\n') };
 }
 
+const JUDGE_PROMPT = (question, answer, quotes) => `你是嚴格的引文審查員。下面是使用者的問題、一個回答，以及回答所引用的原文。
+逐段判斷：**這段原文講的，是不是使用者問題裡的某個部分，而且沒有被拿去套在別的情境上**。
+問題常由幾個部分組成（例如「某卡的發動條件」＋「某種動作算不算發動」），一段原文只需要
+直接講到其中一個部分就算 direct=true。
+
+- direct=true：原文直接寫了問題裡的某個部分（同樣的卡、同樣的動作或同樣的規則概念）。
+- direct=false：原文講的是**不同的情境**，卻被拿來回答這個問題（例如問 P 怪獸，原文講的是陷阱卡；
+  或問 A 卡，原文講的是 B 卡），或原文跟問題毫無關係。
+
+=== 使用者的問題 ===
+${question}
+
+=== 回答 ===
+${answer}
+
+=== 引用的原文 ===
+${quotes.map((q, i) => `(${i + 1}) [${q.type} ${q.id}]\n${q.quote}`).join('\n\n')}
+
+只輸出 JSON：{"results":[{"n":1,"direct":布林},{"n":2,"direct":布林}]}，每段原文一筆。`;
+
+/** 回傳沒通過的引文標記；空陣列＝全部通過。 */
+async function check_relevance(question, answer, quotes, gen) {
+	const res = await generate(JUDGE_PROMPT(question, answer.replace(/⟦\d+⟧/g, ''), quotes),
+		{ stage: 'answer', json: true, max_tokens: 2048, thinking_budget: 512, temperature: 0, ...gen });
+	if (process.env.YGO_DEBUG)
+		console.log(`[ask] 相關性審查原始輸出：${res.error ?? res.text}`);
+	const results = res.error ? null : parse_json(res.text)?.results;
+	if (!Array.isArray(results))
+		return ['審查失敗'];
+	return quotes
+		.map((q, i) => ({ q, r: results.find(x => Number(x?.n) === i + 1) }))
+		// 只有明確說 false 的才算沒通過；小模型常漏回其中一筆，漏回不是判決
+		.filter(({ r }) => r?.direct === false)
+		.map(({ q }) => `${q.type}:${q.id}`);
+}
+
 const HEDGE_WORDS = ['暗示', '可推知', '可以推知', '推測', '類推', '同理', '換言之', '應該是', '一般來說'];
 
 function find_hedges(text) {
@@ -400,6 +436,23 @@ ${c.text}`)])),
 			return {
 				...base, cards: resolved, refused: true, dropped, debug,
 				answer: `回答聲稱依據${missing.join('、')}，但沒有對應的有效引用，因此不提供結論 —— 請洽裁判或官方事務局。`,
+			};
+		}
+	}
+
+	// --- 相關性檢查（選用：ASK_RELEVANCE_CHECK=1）---
+	// 引文是真的，不代表它支持結論 —— 模型會拿「陷阱卡的發動」的裁定去答
+	// 「P 牌的發動」。另外問一次：每段引文有沒有直接涵蓋使用者問的那個情境？
+	// 任何一段說沒有，整個回答作廢（同「不組合推論」的立場）。
+	// ⚠️ 多一次模型呼叫（用第二段的供應者），所以預設關閉；fail-closed：
+	//    檢查本身失敗或輸出看不懂，也當作沒通過。
+	if (!refused && process.env.ASK_RELEVANCE_CHECK === '1' && quotes.length) {
+		const bad = await check_relevance(question, parsed.answer, quotes, gen);
+		if (bad.length) {
+			console.warn(`[ask] 相關性檢查未通過 ${bad.join('、')}｜問題：${question}`);
+			return {
+				...base, cards: resolved, refused: true, dropped, debug, quotes,
+				answer: '引用的依據沒有直接涵蓋你問的情況，因此不提供結論 —— 請洽裁判或官方事務局。',
 			};
 		}
 	}
