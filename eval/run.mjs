@@ -208,7 +208,11 @@ async function run_rules(c) {
 
 	const r = await answer_question(c.question, { allow_fetch: ALLOW_FETCH, wait_for_slot: true });
 	if (r.error) {
-		if (/429|每日上限/.test(r.error))
+		// ⚠️ 只有**每日**配額用完才停整輪。每分鐘的 429 等一下就好 ——
+		//    第一版把所有 429 都當成「今日用完」，於是撞到一次每分鐘上限，
+		//    後面的題目全被跳過，報表上看起來像額度沒了，其實還有。
+		//    ygo-gemini.mjs 對每日配額的錯誤訊息一定含「每日上限」。
+		if (/每日上限|PerDay/i.test(r.error))
 			quota_dead = r.error;
 		return skip(c, `作答失敗：${r.error}`);
 	}
