@@ -200,3 +200,36 @@ test('審查：送給審查員的回答已去掉 ⟦⟧ 編號', async () => {
 	assert.ok(!seen.includes('⟦R21-3⟧'));
 	assert.ok(seen.includes('依據可以。'));
 });
+
+test('審查：提示詞依依據種類分開標準，且標出每段的種類與編號', async () => {
+	let seen = '';
+	const quotes = [
+		{ type: 'rule', id: 31, quote: '規則通則' },
+		{ type: 'ruling', id: 900, quote: '裁定內容' },
+		{ type: 'card', id: 555, quote: '卡片效果' },
+	];
+	await check_relevance('問題', '回答', quotes, {}, async p => {
+		seen = p;
+		return { text: '{"results":[]}' };
+	});
+	// 三種依據各有自己的標準：規則是通則（例子換別張卡不算不相關）、卡片只確認效果文字、裁定最嚴格
+	for (const w of ['通則', '即使它舉的例子用的是別張卡', '問題提到的那張卡', '針對特定卡、特定情境'])
+		assert.ok(seen.includes(w), `提示詞應該包含「${w}」`);
+	assert.ok(seen.includes('[rule 31]') && seen.includes('[ruling 900]') && seen.includes('[card 555]'));
+	assert.ok(seen.includes('reason'), '要求審查員附上理由');
+});
+
+test('審查：被標出來的引文，審查員的理由會進日誌', async t => {
+	const warn = t.mock.method(console, 'warn', () => {});
+	const bad = await judge('{"results":[{"n":1,"direct":true,"reason":"通則"},{"n":2,"direct":false,"reason":"裁定講的是別張卡"}]}');
+	assert.deepEqual(bad, ['ruling:900']);
+	const logged = warn.mock.calls.map(c => c.arguments[0]).join('\n');
+	assert.ok(logged.includes('ruling:900') && logged.includes('裁定講的是別張卡'));
+	// 通過的不記理由
+	assert.ok(!logged.includes('rule:21'));
+});
+
+test('審查：沒附理由也照常判讀，不會因為缺 reason 而炸', async t => {
+	t.mock.method(console, 'warn', () => {});
+	assert.deepEqual(await judge('{"results":[{"n":1,"direct":false}]}'), ['rule:21']);
+});
