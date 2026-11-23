@@ -247,6 +247,11 @@ async function run_rules(c) {
 		if (!r.answer.includes(w))
 			bad.push(`缺少必要內容「${w}」`);
 	}
+	// 同義詞：每一組至少要出現一個（答案寫「無法」或「不能」都算數）。
+	for (const group of e.must_contain_any ?? []) {
+		if (!group.some(w => r.answer.includes(w)))
+			bad.push(`缺少必要內容（以下任一）「${group.join('」「')}」`);
+	}
 	if (e.max_chars && r.answer.length > e.max_chars)
 		bad.push(`回答 ${r.answer.length} 字，超過上限 ${e.max_chars}`);
 
