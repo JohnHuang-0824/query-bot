@@ -74,7 +74,7 @@ const spec = JSON.parse(readFileSync(new URL('./cases.json', import.meta.url), '
 const rules_spec = JSON.parse(readFileSync(new URL('./rules-cases.json', import.meta.url), 'utf8'));
 const all_cases = [...spec.cases, ...rules_spec.cases];
 
-const results = { pass: 0, fail: 0, skip: 0, draft: 0, manual: 0 };
+const results = { pass: 0, fail: 0, known: 0, skip: 0, draft: 0, manual: 0 };
 // 一旦撞到每日配額就記下來，後面的題目直接跳過，不再送請求。
 let quota_dead = '';
 const failures = [];
@@ -87,7 +87,14 @@ function name_of(id) {
 function check(c, ok, detail) {
 	if (ok) {
 		results.pass++;
-		console.log(`  ✓ ${c.id}`);
+		console.log(`  ✓ ${c.id}${c.known_fail ? '（標了 known_fail 卻通過了，可以拿掉那一行）' : ''}`);
+	}
+	// known_fail：已知會失敗、原因已經查清楚的題目。不算紅燈、不影響結束碼，
+	// 但每次都會印出來，免得被遺忘。⚠️ 只該用在「原因不在這個測的東西上」的題目
+	// （例如檢索已修好、卡在第二段理解），不要拿來蓋住還沒查的失敗。
+	else if (c.known_fail) {
+		results.known++;
+		console.log(`  △ ${c.id} —— 已知失敗（${c.known_fail}）：${detail}`);
 	}
 	else {
 		results.fail++;
@@ -305,7 +312,7 @@ for (const c of all_cases) {
 }
 
 console.log(`
-通過 ${results.pass}\u3000失敗 ${results.fail}\u3000跳過 ${results.skip}\u3000草稿 ${results.draft}\u3000待人工 ${results.manual}`);
+通過 ${results.pass}\u3000失敗 ${results.fail}\u3000已知失敗 ${results.known}\u3000跳過 ${results.skip}\u3000草稿 ${results.draft}\u3000待人工 ${results.manual}`);
 
 if (quota_dead) {
 	console.log(`
