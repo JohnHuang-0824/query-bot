@@ -46,7 +46,7 @@ cp .env.example .env
 | `LLM_PROVIDER_SELECT` / `LLM_PROVIDER_ANSWER` | 兩段分開指定，留空 = 跟 `LLM_PROVIDER` 一樣 |
 | `GEMINI_API_KEY` | Gemini 免費層實測每天只有 20 次請求，也就是全服一天 10 題。本機上限預設不設，撞到 Google 的 429 才記下對方回報的上限 |
 | `ANTHROPIC_API_KEY` | Claude 訂閱不含 API 額度，要另外在 console 儲值。第一段預設 Haiku、第二段預設 Sonnet。⚠️ 這條路徑還沒用真的金鑰測過 |
-| `ASK_RELEVANCE_CHECK=1` | 多一次呼叫檢查引文是否直接涵蓋問題。拒答會變多，但擋得住拼湊推論。預設關閉 |
+| `ASK_RELEVANCE_CHECK=1` | 多一次呼叫檢查引文是否直接涵蓋問題。拒答會變多。⚠️ 實測擋類推與誤殺有效答案兩者無法兼顧，**不建議開**（詳見 `.env.example`）。預設關閉 |
 | `ASK_PER_USER_PER_DAY` | 每人每日提問上限，預設 3，0 = 不限制 |
 
 Ollama（`OLLAMA_*`）只給本機開發跑評測用：實測 qwen3:8b 當第二段，引文驗證現在多半能過，
