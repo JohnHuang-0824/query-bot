@@ -233,3 +233,35 @@ test('審查：沒附理由也照常判讀，不會因為缺 reason 而炸', asy
 	t.mock.method(console, 'warn', () => {});
 	assert.deepEqual(await judge('{"results":[{"n":1,"direct":false}]}'), ['rule:21']);
 });
+
+/* ---- expand_stubs：空殼母章節帶上子章節 ---- */
+
+import { expand_stubs } from '../ygo-rules.mjs';
+
+const ROWS = [
+	{ id: 17, path: '进行回合的优先权', chars: 201 },
+	{ id: 18, path: '进行回合的优先权 › 特定阶段·步骤的优先权转移', chars: 608 },
+	{ id: 19, path: '进行回合的优先权 › 其他', chars: 300 },
+	{ id: 241, path: '同一时点发动多个诱发类效果', chars: 6849 },
+	{ id: 242, path: '同一时点发动多个诱发类效果 › 子節', chars: 100 },
+];
+
+test('展開：選到空殼母章節就帶上它的子章節，原本的順序不變', () => {
+	assert.deepEqual(expand_stubs([241, 17], ROWS), [241, 17, 18, 19]);
+});
+
+test('展開：大章節不展開（即使有子章節）', () => {
+	assert.deepEqual(expand_stubs([241], ROWS), [241]);
+});
+
+test('展開：子章節已經在清單裡就不重複加', () => {
+	assert.deepEqual(expand_stubs([17, 18], ROWS), [17, 18, 19]);
+});
+
+test('展開：總數不超過上限', () => {
+	assert.deepEqual(expand_stubs([241, 17], ROWS, 400, 3), [241, 17, 18]);
+});
+
+test('展開：目錄裡找不到的編號原樣保留、不炸', () => {
+	assert.deepEqual(expand_stubs([999], ROWS), [999]);
+});

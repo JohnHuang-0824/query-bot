@@ -12,7 +12,7 @@
  */
 
 import { generate, model_name } from './ygo-llm.mjs';
-import { build_toc, collect_sections, get_section, corpus_state } from './ygo-rules.mjs';
+import { build_toc, collect_sections, expand_stubs, get_section, toc_rows, corpus_state } from './ygo-rules.mjs';
 import { resolve_id, display_name } from './ygo-alias.mjs';
 import { get_card } from './ygo-query.mjs';
 import { cache_state, fetch_rulings, get_rulings, get_ruling, ensure_detail } from './ygo-ruling.mjs';
@@ -31,7 +31,7 @@ const MAX_CARD_TEXT = 1500;
 
 /* ------------------------------------------------------------------ 第一段 */
 
-const SELECT_PROMPT = (toc, question) => `你是遊戲王規則資料的檢索助手。下面是規則文件的目錄，每行是「編號<TAB>章節路徑」。
+export const SELECT_PROMPT = (toc, question) => `你是遊戲王規則資料的檢索助手。下面是規則文件的目錄，每行是「編號<TAB>章節路徑」。
 
 ${toc}
 
@@ -49,6 +49,9 @@ ${question}
   很多問題的形式是「某個動作算不算某個用語」（例如「把 P 怪獸放到 P 區算不算
   魔法卡的發動」），答案就寫在那個用語的定義裡，而定義章節的標題看起來跟
   問題一點都不像。寧可多挑一節定義，也不要漏掉。
+  ⚠️ **問題裡的用語如果直接出現在某個章節的標題裡，那一節比泛稱的大類章節優先。**
+  例如問題在講「優先權」「放棄優先權」，目錄裡標題含「優先權」的章節要先挑；
+  「階段」「時點」這種只是情境背景的大類章節，不要為了湊數佔掉名額。
 - cards 是問題裡提到的卡片名稱，原樣抄出來，最多 ${MAX_CARDS} 個。沒提到卡就給空陣列。
 - 目錄是簡體中文，問題可能是繁體中文或日文，請自行對應。`;
 
@@ -373,9 +376,11 @@ export async function answer_question(question, opts = {}) {
 			return { ...base, refused: true, answer: '目前無法查詢，請稍後再試。', error: sel_res.error };
 		sel = parse_json(sel_res.text) ?? {};
 	}
-	const section_ids = (Array.isArray(sel.sections) ? sel.sections : [])
+	const picked = (Array.isArray(sel.sections) ? sel.sections : [])
 		.map(Number).filter(Number.isInteger).slice(0, MAX_SECTIONS)
 		.filter(id => get_section(id));
+	// 空殼母章節的子章節一起帶上（上限 MAX_SECTIONS + 2）。
+	const section_ids = expand_stubs(picked, toc_rows(), 400, MAX_SECTIONS + 2);
 	const card_names = (Array.isArray(sel.cards) ? sel.cards : []).slice(0, MAX_CARDS);
 
 	// --- 蒐集依據 ---

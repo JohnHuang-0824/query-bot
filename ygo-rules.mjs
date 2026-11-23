@@ -169,6 +169,40 @@ export function build_toc() {
 	return stmt_toc.all().map(r => `${r.id}\t${r.path}`).join('\n');
 }
 
+/**
+ * 選到「空殼母章節」時，把它的子章節一起帶上。
+ *
+ * ⚠️ 有些母章節只有一兩行導言，內容全在子章節（例如「进行回合的优先权」201 字，
+ *    「› 特定阶段·步骤的优先权转移」才是答案）。第一段模型常只挑到母章節，
+ *    結果作答時手上只有導言。字數小於 stub 的才展開，大章節不動。
+ *
+ * @param {number[]} ids 原本挑的章節（順序保留，新增的排在後面）
+ * @param {{id:number,path:string,chars:number}[]} rows 目錄
+ * @param {number} stub 小於這個字數視為空殼
+ * @param {number} limit 展開後的總數上限
+ */
+export function expand_stubs(ids, rows, stub = 400, limit = 8) {
+	const out = [...ids];
+	const by_id = new Map(rows.map(r => [r.id, r]));
+	for (const id of ids) {
+		const p = by_id.get(id);
+		if (!p || p.chars >= stub)
+			continue;
+		for (const r of rows) {
+			if (out.length >= limit)
+				return out;
+			if (r.path.startsWith(`${p.path} › `) && !out.includes(r.id))
+				out.push(r.id);
+		}
+	}
+	return out;
+}
+
+/** 目錄（含字數），給 expand_stubs 用。 */
+export function toc_rows() {
+	return stmt_toc.all();
+}
+
 /** 取章節全文。 */
 export function get_section(id) {
 	return stmt_get.get(id) ?? null;
