@@ -128,6 +128,11 @@ export async function execute(interaction) {
 	if (r.dropped?.length)
 		console.warn(`[ask] 模型編造引用 ${JSON.stringify(r.dropped)}｜問題：${question}`);
 
+	// 第一段抽到的卡名在索引裡找不到：回答照給，只是沒有那張卡的卡文與裁定。
+	// 這是補別名（alias-seed.json）的唯一線索，不記就永遠不知道使用者用了什麼說法。
+	if (r.unresolved?.length)
+		console.warn(`[ask] 卡名解析不到 ${JSON.stringify(r.unresolved)}｜問題：${question}`);
+
 	// 拒答也要留痕 —— 「查無足夠依據」有兩種成因（檢索沒選到 vs 依據
 	// 真的不涵蓋），而使用者看到的字一模一樣。只有依據清單分得出來。
 	if (r.refused)

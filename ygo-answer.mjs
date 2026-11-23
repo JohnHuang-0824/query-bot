@@ -342,7 +342,7 @@ function find_hedges(text) {
  * @returns {Promise<{
  *   refused: boolean, answer: string, model: string,
  *   rule_ids: number[], ruling_fids: number[], card_ids: number[], cards: string[],
- *   error?: string, dropped?: string[]
+ *   error?: string, dropped?: string[], unresolved?: string[]
  * }>}
  */
 export async function answer_question(question, opts = {}) {
@@ -390,10 +390,16 @@ export async function answer_question(question, opts = {}) {
 	const rulings = [];
 	const resolved = [];
 	const card_ctx = [];
+	// ⚠️ 卡名解析不到時不報錯、只是少了卡文與裁定 —— 失敗是無聲的。
+	//    使用者用別的譯名問（「太陽神之翼神龍-不死鳥」vs 官方「拉的翼神龍-不死鳥」）
+	//    就會遇到，所以記下來回傳，由指令層寫進日誌，才有地方知道該補哪些別名。
+	const unresolved = [];
 	for (const name of card_names) {
 		const id = resolve_id(name);
-		if (id === null)
+		if (id === null) {
+			unresolved.push(name);
 			continue;
+		}
 		const card = get_card(id);
 		if (!card?.cid)
 			continue;
@@ -413,6 +419,7 @@ export async function answer_question(question, opts = {}) {
 				rulings.push(r);
 		}
 	}
+	base.unresolved = unresolved;
 	// 只把要送進去的那幾條抓全文，其餘留標題就好 —— 每多一條就是一次請求。
 	for (const r of rulings.slice(0, MAX_RULINGS)) {
 		if (!r.answer && allow_fetch)
@@ -539,7 +546,7 @@ export async function answer_question(question, opts = {}) {
 		refused, ...(refused ? { reason: 'model' } : {}),
 		// 模型有時會把 ⟦3⟧ 這種編號寫進回答文字，對使用者沒意義，去掉
 		answer: strip_marks(parsed.answer).trim(),
-		rule_ids, ruling_fids, card_ids, cards: resolved, debug, quotes,
+		rule_ids, ruling_fids, card_ids, cards: resolved, debug, quotes, unresolved,
 		...(dropped.length ? { dropped } : {}),
 		...(hedges.length ? { hedges } : {}),
 	};
