@@ -1,0 +1,7 @@
+# 本機為了跑 eslint 會裝依賴。不排除的話，Dockerfile 的 COPY . . 會把它蓋到
+# 映像裡 pnpm install --prod 裝好的那份上面（Windows 的連結結構在容器裡也不能用）。
+node_modules
+
+# Discord token 與 API 金鑰不能打包進映像 —— 拿得到映像的人就讀得到。
+# 容器的環境變數由 compose 傳入，程式不讀這個檔。
+.env
