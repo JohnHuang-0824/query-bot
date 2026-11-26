@@ -12,7 +12,7 @@
  *
  * ── 跑模型的題目（--llm）──────────────────────────────────────────────
  *
- *   node eval/run.mjs --llm --only=rules-011,rules-012,refuse-001
+ *   node eval/run.mjs --llm --only=rules-011,rules-012,refuse-002
  *
  *   --only=  逗號分隔，每一項是題目 id 的子字串（rules-00 會跑 rules-001～009）。
  *   --llm    才會呼叫模型。Gemini 免費層每天 20 次，一題 2 次呼叫，所以一天約 10 題。
@@ -56,7 +56,7 @@ const ALLOW_FETCH = process.argv.includes('--fetch');
 //    才會真的變成習慣 —— 要錢又要等的檢查，人就不會跑。
 const ALLOW_LLM = process.argv.includes('--llm');
 // --only= 可用逗號分隔多個，每一項是題目 id 的子字串：
-//   --only=rules-011,rules-012,refuse-001   只跑這三題
+//   --only=rules-011,rules-012,refuse-002   只跑這三題
 //   --only=rules-00                          跑 rules-001～009
 const ONLY = (process.argv.find(a => a.startsWith('--only=')) ?? '').slice(7)
 	.split(',').map(s => s.trim()).filter(Boolean);
