@@ -1,9 +1,10 @@
 /**
  * 評測集本身的檢查 —— 不連模型。
  *
- * 作答結論是「可以」的題目，must_contain 只比對「可以」兩個字，而「不可以」也命中。
- * 擋相反結論靠 must_not_conclude 的正規表達式，這裡驗它們：
- * 擋得住相反結論、又不會誤擋 gold 與正確的說法。
+ * 作答題的 must_contain 只比對字面：結論是「可以」的題目，「不可以」也命中；
+ * 結論是「不能」的題目，答「可以」只要別處提到「不能」也會通過。擋相反結論靠
+ * must_not_conclude 的正規表達式，這裡驗它們：擋得住相反結論、又不會誤擋 gold
+ * 與正確的說法。
  *
  * ⚠️ 改了這幾題的 must_not_conclude 就要跑這個。評測跑出誤擋或漏擋時，
  *    把那句實際回答加進下面的樣本。
@@ -12,12 +13,51 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { bad_conclusions, strip_quotes } from '../eval/conclude.mjs';
 
 const { cases } = JSON.parse(readFileSync(new URL('../eval/rules-cases.json', import.meta.url), 'utf8'));
 const by_id = id => cases.find(c => c.id === id);
-const blocked = (id, answer) => by_id(id).expect.must_not_conclude.some(re => new RegExp(re).test(answer));
+const blocked = (id, answer) => bad_conclusions(answer, by_id(id).expect.must_not_conclude).length > 0;
 
 const SAMPLES = {
+	'rules-001': {
+		wrong: [
+			'可以發動。大宇宙只讓卡片不能送去墓地，這不代表不能發動，cost照樣支付。',
+			'根據規則，這個情況可以從手牌發動增殖的G。',
+			'大宇宙適用中並非不能發動，送去墓地的cost改為除外。',
+		],
+		right: [
+			// 實跑過的正確回答
+			'在「大宇宙」的效果適用中，您不能從手牌發動「增殖的G」的①效果。',
+			'由於不能將卡片送去墓地，因此不能發動需要將卡片送去墓地作為cost的效果。',
+			// 引述卡文裡的「可以發動」不是結論
+			'卡文寫著「將此卡從手牌送去墓地可以發動」，大宇宙適用中付不出這個cost，不能發動。',
+			'只有在能把此卡送去墓地時才可以發動，所以現在不能發動。',
+		],
+	},
+	'rules-002': {
+		wrong: [
+			'可以發動。連鎖2的情況不會錯過時點，不能發動的限制不適用。',
+			'因此光龍星-螭吻的效果可以發動。',
+			'連鎖2的情況不會錯過時點。',
+		],
+		right: [
+			'其效果記述為『○○時可以發動』，連鎖2以上發動時會錯過時點，不能發動。',
+			'「時」類的可選發效果只能在滿足條件的那個時點發動，這裡已經錯過時點，不能發動。',
+		],
+	},
+	'rules-003': {
+		wrong: [
+			'可以再發動。怪獸效果的發動被無效時不能算作使用過，1回合1次的限制沒有消耗。',
+			'因此這隻怪獸本回合仍可以再次發動。',
+			'怪獸效果的發動被無效時不會計入使用次數，不能當作用過。',
+		],
+		right: [
+			// 實跑過的正確回答
+			'怪獸效果的發動被無效的場合，該效果仍然被視為已使用過一次。因此該怪獸這回合也不能再發動同一個「1回合1次」的效果。',
+			'是否還能再發動？不能。怪獸效果的使用次數照樣計算。',
+		],
+	},
 	'rules-004': {
 		wrong: [
 			// 實跑過的錯誤回答（引規則 241 得出相反結論）
@@ -30,6 +70,41 @@ const SAMPLES = {
 		right: [
 			'回合玩家可以先發動選發效果，必發效果可以之後再處理。',
 			'必發效果並不優先，回合玩家可以選擇先發動閃刀姬-零空②。',
+		],
+	},
+	'rules-005': {
+		wrong: [
+			'可以發動。大宇宙適用中cost改為除外，不是送去墓地，所以不能發動的說法不成立。',
+			'結論是禁忌一滴可以發動。',
+		],
+		right: [
+			// 實跑過的正確回答
+			'由於卡片不能被送去墓地，因此不能發動需要將卡片送去墓地作為cost的效果，在「大宇宙」適用中不能發動。',
+			'只有在能支付送去墓地的cost時才能發動，因此現在不能發動。',
+		],
+	},
+	'rules-006': {
+		wrong: [
+			'可以發動。傷害步驟中並非不能使用手牌效果。',
+			'這個情況對方可以發動手牌中的幽鬼兔。',
+		],
+		right: [
+			// 實跑過的正確回答（卡文引述含「可以發動」）
+			'在傷害步驟中，對手不能發動手牌中的「幽鬼兔」。「幽鬼兔」的效果發動條件是「場上的怪獸的效果發動時，將手牌、場上的此卡送去墓地可以發動」。',
+			'卡文是將手牌、場上的此卡送去墓地可以發動，需要有效果發動才行，戰鬥破壞時不能發動。',
+			'對方只有在效果發動時可以發動，這個情況沒有可回應的效果，不能發動。',
+		],
+	},
+	'rules-007': {
+		wrong: [
+			'可以適用。即使②效果尚未適用的說法存在，也不能否定代替破壞。',
+			'此時代替破壞仍然適用。',
+			'結果安迪米翁皇國不會被破壞。',
+		],
+		right: [
+			// 實跑過的正確回答
+			'在連鎖確認的時點尚未適用。因此②效果（代替破壞）無法適用，結果「安迪米翁皇國」會被破壞。',
+			'不能適用。要在場上正常適用中才可以適用代替破壞。',
 		],
 	},
 	'rules-008': {
@@ -108,11 +183,19 @@ test('評測集：每題的 gold 通過自己的字串檢查', () => {
 	assert.deepEqual(bad, []);
 });
 
-test('評測集：結論是「可以」的作答題都有擋相反結論的規則', () => {
-	const positive = cases.filter(c => c.expect?.must_contain?.includes('可以')).map(c => c.id);
-	assert.deepEqual(positive.sort(), Object.keys(SAMPLES).sort());
-	for (const id of positive)
+test('評測集：有明確結論的作答題都有擋相反結論的規則，也都有樣本', () => {
+	const answerable = cases
+		.filter(c => /^(可以|不能)/.test(c.gold ?? '') && c.expect?.must_refuse !== true)
+		.map(c => c.id);
+	for (const id of answerable)
 		assert.ok(by_id(id).expect.must_not_conclude?.length, `${id} 沒有 must_not_conclude`);
+	// rules-012 另計：gold 理由還沒寫完，內文本身就含「可以發動」（在警告別給這個結論）。
+	assert.deepEqual(answerable.filter(id => id !== 'rules-012').sort(), Object.keys(SAMPLES).sort());
+});
+
+test('引號裡的引文不算結論，巢狀引號也拿掉', () => {
+	assert.equal(strip_quotes('卡文「此卡『可以發動』」所以不能'), '卡文所以不能');
+	assert.equal(strip_quotes('沒有引號'), '沒有引號');
 });
 
 for (const [id, s] of Object.entries(SAMPLES)) {

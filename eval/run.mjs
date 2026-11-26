@@ -46,6 +46,7 @@ import { get_card } from '../ygo-query.mjs';
 import { cache_state, fetch_rulings, get_common_rulings } from '../ygo-ruling.mjs';
 import { answer_question } from '../ygo-answer.mjs';
 import { get_section } from '../ygo-rules.mjs';
+import { bad_conclusions } from './conclude.mjs';
 
 const ALLOW_FETCH = process.argv.includes('--fetch');
 
@@ -244,13 +245,11 @@ async function run_rules(c) {
 		bad.push(`不該拒答卻拒答了（原因：${REASON_TEXT[r.reason] ?? r.reason ?? '未標示'}）`);
 
 	// 結論不可以是這個樣子。⚠️ 只在**沒拒答**時檢查 —— 拒答的字面裡可能剛好有
-	//    「可以」，而拒答本來就是可接受的結果。用正規表達式是因為「可以發動」
-	//    是「不可以發動」的子字串，單純比字串會誤判。
+	//    「可以」，這裡不管拒答（作答題拒答由上面那條判失敗）。用正規表達式是因為
+	//    「可以發動」是「不可以發動」的子字串，單純比字串會誤判。引號裡的引文不算。
 	if (!r.refused) {
-		for (const re of e.must_not_conclude ?? []) {
-			if (new RegExp(re).test(r.answer))
-				bad.push(`給出了不該有的結論（符合 /${re}/）`);
-		}
+		for (const re of bad_conclusions(r.answer, e.must_not_conclude))
+			bad.push(`給出了不該有的結論（符合 /${re}/）`);
 	}
 
 	for (const w of e.must_not_contain ?? []) {
