@@ -269,6 +269,13 @@ docker compose -f docker-compose.dev.yml run --rm --no-deps -T bot node --test t
 commit、push 之後，Pi 上 `git pull` 再 `up -d --build` —— `data/` 是打包在
 映像裡的，**只 restart 不會生效**。
 
+GitHub Actions 每週一早上會檢查一次（「data 過期檢查」），紅燈就照上面做。
+它只抓查不到的卡，禁限卡表更新不會讓它變紅。要手動檢查：
+
+```bash
+docker compose -f docker-compose.dev.yml run --rm --no-deps -T bot node scripts/check-data.mjs
+```
+
 ### 規則語料要自己記得更新
 
 `import-rules.mjs` 是手動的。OCG Rule 的維護者每週都在加 FAQ 引用，所以
