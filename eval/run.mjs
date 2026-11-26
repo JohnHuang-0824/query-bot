@@ -27,9 +27,9 @@
  *   ⚠️ **開與不開是兩種不同的系統，結果不能混著比。** 它會讓拒答變多、呼叫次數從 2
  *      變 3（20 次額度只夠約 6 題）。要比較就兩邊各跑同一批題、其他設定（供應者、
  *      模型、第一段）全部相同，並把開關狀態跟結果一起記下來。
- *   ⚠️ 開了之後 must_refuse: false 的題目會多出「相關性檢查未通過」造成的失敗 ——
- *      那不一定是誤殺，也可能正好是擋掉了拼湊推論。看答案區印出的引文，對照 gold
- *      判斷，不要只看紅綠燈。
+ *   ⚠️ 開了之後作答題（must_refuse: false，或有必要內容的題目）會多出「相關性檢查
+ *      未通過」造成的失敗 —— 那不一定是誤殺，也可能正好是擋掉了拼湊推論。
+ *      看答案區印出的引文，對照 gold 判斷，不要只看紅綠燈。
  *   ⚠️ must_not_conclude 這類「不可以出現的結論」不受影響：被擋成拒答不會觸發它，
  *      而拒答本來就是可接受的結果。
  *
@@ -233,7 +233,14 @@ async function run_rules(c) {
 
 	if (e.must_refuse === true && !r.refused)
 		bad.push('預期拒答，實際給了結論');
-	if (e.must_refuse === false && r.refused)
+	// 作答題（must_refuse: false，或有必要內容的題目）拒答一律算失敗。
+	// ⚠️ 不能靠必要內容的字面比對擋 —— 拒答文字常常複述問題（「回合玩家是否可以
+	//    選擇先發動選發效果，而不是必發效果」），「可以」「必發」「選發」全都命中，
+	//    rules-004 就這樣假通過過一次。沒有必要內容的題目（rules-012）仍然可以拒答。
+	const needs_answer = e.must_refuse === false
+		|| (e.must_refuse !== true && Boolean(e.must_contain?.length || e.must_contain_any?.length));
+	const wrongly_refused = needs_answer && r.refused;
+	if (wrongly_refused)
 		bad.push(`不該拒答卻拒答了（原因：${REASON_TEXT[r.reason] ?? r.reason ?? '未標示'}）`);
 
 	// 結論不可以是這個樣子。⚠️ 只在**沒拒答**時檢查 —— 拒答的字面裡可能剛好有
@@ -250,12 +257,13 @@ async function run_rules(c) {
 		if (r.answer.includes(w))
 			bad.push(`出現禁用字眼「${w}」`);
 	}
-	for (const w of e.must_contain ?? []) {
+	// 錯誤拒答時不比對必要內容：命中了不算數，缺了也只是重複上面那一條。
+	for (const w of wrongly_refused ? [] : e.must_contain ?? []) {
 		if (!r.answer.includes(w))
 			bad.push(`缺少必要內容「${w}」`);
 	}
 	// 同義詞：每一組至少要出現一個（答案寫「無法」或「不能」都算數）。
-	for (const group of e.must_contain_any ?? []) {
+	for (const group of wrongly_refused ? [] : e.must_contain_any ?? []) {
 		if (!group.some(w => r.answer.includes(w)))
 			bad.push(`缺少必要內容（以下任一）「${group.join('」「')}」`);
 	}
