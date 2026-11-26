@@ -248,6 +248,27 @@ crontab -e
 重啟會重新下載卡表、重建 `choice_table` 與別名索引。⚠️ 規則語料、裁定快取、
 別名表都在 SQLite 裡，**不會因為重啟而遺失**。
 
+### `data/` 過期：新卡整張查不到
+
+重啟只更新卡表，**不會更新 `data/`**（官方編號、卡名表、禁限卡表）和
+`pack/`，那些是倉庫裡的檔案。上游幾天改一次；沒同步的話，新發售的卡沒有
+官方編號，`/card`、`/ask` 都查不到。啟動日誌出現這行就是該同步了：
+
+```
+[資料] N 張卡沒有官方編號、查不到（…）。data/ 可能過期了
+```
+
+在開發機上做（只取資料檔，不合併上游的程式）：
+
+```bash
+git fetch upstream
+git restore --source=upstream/master --worktree -- data pack
+docker compose -f docker-compose.dev.yml run --rm --no-deps -T bot node --test test/
+```
+
+commit、push 之後，Pi 上 `git pull` 再 `up -d --build` —— `data/` 是打包在
+映像裡的，**只 restart 不會生效**。
+
 ### 規則語料要自己記得更新
 
 `import-rules.mjs` 是手動的。OCG Rule 的維護者每週都在加 FAQ 引用，所以
