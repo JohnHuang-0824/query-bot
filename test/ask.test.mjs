@@ -274,6 +274,9 @@ test('展開：目錄裡找不到的編號原樣保留、不炸', () => {
 
 import { answer_question } from '../ygo-answer.mjs';
 import { toc_rows, get_section, corpus_state } from '../ygo-rules.mjs';
+import { resolve_id } from '../ygo-alias.mjs';
+import { get_card } from '../ygo-query.mjs';
+import { choice_table } from '../common_all.js';
 
 // 章節編號從目前的語料挑，語料更新後編號會變，不能寫死。
 const TOC = corpus_state().sections ? toc_rows() : [];
@@ -340,6 +343,34 @@ test('流程：解析得到的卡，卡文送進第二段而且可以引用', ne
 	assert.ok(calls[1].prompt.includes(`⟦C${CARD.id}-1⟧`));
 	assert.deepEqual(r.card_ids, [CARD.id]);
 	assert.deepEqual(r.unresolved, []);
+});
+
+// 沒有官方編號的卡（先行卡、剛發售還沒進編號表的卡）。是哪幾張會隨卡表變，現挑。
+const NO_CID = [...choice_table.full].find(([name, id]) => {
+	if (choice_table['zh-tw'].has(name))
+		return false;
+	const card = get_card(id);
+	return card && !card.cid && card.text.description && resolve_id(name) === id;
+});
+const needs_no_cid = { skip: needs_corpus.skip || (NO_CID ? false : '卡表裡沒有缺編號的卡') };
+
+test('流程：沒有官方編號的卡，卡文照樣送進第二段，但不查裁定', needs_no_cid, async t => {
+	const [name, id] = NO_CID;
+	t.mock.method(globalThis, 'fetch', async () => assert.fail('沒有編號的卡不該發出請求'));
+	const cites = [{ type: 'card', id, sents: [`C${id}-1`] }];
+	const { r, calls } = await ask(t, [select([], [name]), reply({ cites })], { allow_fetch: true });
+	assert.ok(calls[1].prompt.includes(`⟦C${id}-1⟧`));
+	assert.deepEqual(r.card_ids, [id]);
+	assert.equal(r.cards.length, 1);
+	assert.deepEqual(r.ruling_fids, []);
+	assert.deepEqual(r.unresolved, []);
+});
+
+test('流程：卡表裡沒有的卡號算解析不到', needs_corpus, async t => {
+	const { r } = await ask(t, [select([], ['999999999'])]);
+	assert.equal(r.reason, 'no_evidence');
+	assert.deepEqual(r.unresolved, ['999999999']);
+	assert.deepEqual(r.cards, []);
 });
 
 test('流程：沒有任何依據就不呼叫第二段', needs_corpus, async t => {

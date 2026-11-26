@@ -396,13 +396,12 @@ export async function answer_question(question, opts = {}) {
 	const unresolved = [];
 	for (const name of card_names) {
 		const id = resolve_id(name);
-		if (id === null) {
+		// 純數字會被 resolve_id 原樣當成卡號，卡表裡不一定有
+		const card = id === null ? null : get_card(id);
+		if (!card) {
 			unresolved.push(name);
 			continue;
 		}
-		const card = get_card(id);
-		if (!card?.cid)
-			continue;
 		resolved.push(display_name(id));
 		const text = card.text?.description;
 		if (text && !card_ctx.some(c => c.id === card.id)) {
@@ -412,6 +411,9 @@ export async function answer_question(question, opts = {}) {
 				text: text.length > MAX_CARD_TEXT ? `${text.slice(0, MAX_CARD_TEXT)}…` : text,
 			});
 		}
+		// 先行卡與剛發售的卡還沒有官方編號：卡文照附，只是沒有裁定可查。
+		if (!card.cid)
+			continue;
 		if (allow_fetch && !cache_state(card.cid).fetched)
 			await fetch_rulings(card.cid);
 		for (const r of get_rulings(card.cid).slice(0, MAX_RULINGS)) {
