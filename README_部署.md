@@ -278,6 +278,9 @@ commit、push 之後，Pi 上 `git pull` 再 `up -d --build` —— `data/` 是�
 docker compose -f docker-compose.pi.yml exec -T bot node scripts/import-rules.mjs
 ```
 
+解析結果是 0 節，或節數、字數比現有的少兩成以上時，匯入會中止並保留原本
+的語料（來源多半改版了）。確認過沒問題再加 `--force`。
+
 （這支沒有排程是因為它只是一次 GitHub tarball 下載，不像 Konami 那邊有
 使用條款的量的限制 —— 想排程也可以，只是沒必要。）
 
