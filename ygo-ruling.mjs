@@ -141,6 +141,8 @@ const stmt_upsert_list = db.prepare(`
 `);
 const stmt_upsert_detail = db.prepare('UPDATE ruling SET question = ?, answer = ?, updated_at = ?, fetched_at = ? WHERE fid = ?');
 const stmt_link = db.prepare('INSERT OR IGNORE INTO ruling_card (fid, cid) VALUES (?, ?)');
+const stmt_linked = db.prepare('SELECT fid FROM ruling_card WHERE cid = ?');
+const stmt_unlink = db.prepare('DELETE FROM ruling_card WHERE fid = ? AND cid = ?');
 const stmt_mark_card = db.prepare(`
 	INSERT INTO card_fetch (cid, fetched_at, total, complete) VALUES (?, ?, ?, ?)
 	ON CONFLICT(cid) DO UPDATE SET fetched_at = excluded.fetched_at, total = excluded.total, complete = excluded.complete
@@ -267,11 +269,15 @@ function block_by_id(html, id) {
 }
 
 /**
- * 清單頁 → [{fid, question, updated_at}]，加上「全 N 件」。
+ * 清單頁 → [{fid, question, updated_at}]、「全 N 件」，以及頁面有沒有明講
+ * 「這張卡沒有裁定」。
+ *
+ * ⚠️ rows 是空的**不代表沒有裁定**：維護公告、改版後認不得的頁面解析出來
+ *    一樣是空的。只有 empty 為真才算。
  * @param {string} html
  */
 export function parse_list(html) {
-	const total = Number(html.match(/全(\d+)件/)?.[1] ?? 0);
+	const total = Number(html.match(/全([\d,]+)件/)?.[1].replaceAll(',', '') ?? 0);
 	const rows = [];
 	for (const chunk of html.split('class="t_row"').slice(1)) {
 		const fid = Number(chunk.match(/ope=5&(?:amp;)?fid=(\d+)/)?.[1]);
@@ -281,7 +287,9 @@ export function parse_list(html) {
 		const date = chunk.match(/更新日:<\/span>\s*([\d-]+)/)?.[1] ?? null;
 		rows.push({ fid, question: to_text(title), updated_at: date });
 	}
-	return { total, rows };
+	// 2026-11-26 對官方站實測的樣子。卡號不存在是另一句（カード情報がありません）。
+	const empty = !rows.length && /class="no_data">\s*このカードに関連するＱ＆Ａはありません/.test(html);
+	return { total, rows, empty };
 }
 
 /**
@@ -332,13 +340,16 @@ export function parse_detail(html) {
  *   3. User-Agent 帶聯絡方式
  *   4. 不轉散布 —— 只存快取，回答裡只引用單條並連回原頁
  *
+ * 整份清單拿到手時，原本掛在這張卡、清單上卻沒有的裁定會解除關聯。
+ *
  * @param {number} cid
- * @returns {Promise<{total: number, complete: boolean} | null>} null = 熔斷或失敗
+ * @returns {Promise<{total: number, complete: boolean} | null>} null = 熔斷、
+ *   連線失敗或認不得的頁面。這時卡片不會標記成抓過，下次查詢再試。
  */
 export async function fetch_rulings(cid) {
 	let total = 0;
 	let got = 0;
-	let complete = true;
+	const listed = new Set();
 
 	for (let page = 1; page <= RATE.MAX_PAGES; page++) {
 		const params = new URLSearchParams({
@@ -349,27 +360,53 @@ export async function fetch_rulings(cid) {
 		if (html === null)
 			return null;
 
-		const { total: t, rows } = parse_list(html);
-		total = t || total;
-		if (!rows.length)
+		const list = parse_list(html);
+		if (page === 1 && list.empty)
 			break;
+		// ⚠️ 認得的清單頁只有兩種：列出裁定（帶件數），或明講沒有。其他一律
+		//    當抓取失敗 —— 維護公告也是 HTTP 200，記成 0 條的話 /ruling 會回
+		//    「查無官方裁定」，還一路快取到過期。
+		if (!list.total || !list.rows.length) {
+			console.error(`[ruling] 認不得的清單頁 cid=${cid} 第 ${page} 頁 —— 官方站維護中或改版了`);
+			return null;
+		}
 
+		total = list.total;
 		const now = Date.now();
-		for (const r of rows) {
+		for (const r of list.rows) {
 			stmt_upsert_list.run(r.fid, r.question, r.updated_at, now);
 			stmt_link.run(r.fid, cid);
+			listed.add(r.fid);
 		}
-		got += rows.length;
+		got += list.rows.length;
 		if (got >= total)
 			break;
-		if (page === RATE.MAX_PAGES && got < total) {
-			// ⚠️ 沒抓完就要誠實標記。complete=false 時命令列層不准說「查無」。
-			complete = false;
-			console.warn(`[ruling] cid=${cid} 有 ${total} 條，只取了 ${got} 條`);
-		}
+	}
+
+	const complete = got >= total;
+	if (complete)
+		unlink_missing(cid, listed);
+	else {
+		// ⚠️ 沒抓完就要誠實標記。complete=false 時命令列層不准說「查無」。
+		console.warn(`[ruling] cid=${cid} 有 ${total} 條，只取了 ${got} 條`);
 	}
 	stmt_mark_card.run(cid, Date.now(), total, complete ? 1 : 0);
 	return { total, complete };
+}
+
+/**
+ * 官方清單上已經沒有的裁定 = 撤掉了，不能再拿來引用。
+ * ⚠️ 只能在整份清單都拿到時呼叫，否則沒抓到的那些會被當成撤掉。
+ * 只解除跟這張卡的關聯；同一條裁定掛在別張卡的部分，等那張卡重抓時處理。
+ * @param {number} cid
+ * @param {Set<number>} listed 這次清單上的 fid
+ */
+function unlink_missing(cid, listed) {
+	const gone = stmt_linked.all(cid).map(r => r.fid).filter(fid => !listed.has(fid));
+	for (const fid of gone)
+		stmt_unlink.run(fid, cid);
+	if (gone.length)
+		console.warn(`[ruling] cid=${cid} 官方清單少了 ${gone.length} 條，解除關聯：${gone.join(' ')}`);
 }
 
 /**
