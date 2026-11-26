@@ -335,7 +335,9 @@ function find_hedges(text) {
  * 回答一個問題。
  *
  * @param {string} question
- * @param {{ allow_fetch?: boolean }} opts
+ * @param {{ allow_fetch?: boolean, wait_for_slot?: boolean, gen_fn?: typeof generate,
+ *   force_sections?: number[], force_cards?: string[] }} opts
+ *   gen_fn：測試用，換掉模型呼叫（兩段與相關性審查都走它）。正式路徑不傳。
  * @returns {Promise<{
  *   refused: boolean, answer: string, model: string,
  *   rule_ids: number[], ruling_fids: number[], card_ids: number[], cards: string[],
@@ -344,6 +346,7 @@ function find_hedges(text) {
  */
 export async function answer_question(question, opts = {}) {
 	const allow_fetch = opts.allow_fetch ?? true;
+	const gen_fn = opts.gen_fn ?? generate;
 	// 批次評測時傳 wait_for_slot，讓節流變成等待而不是失敗
 	const gen = { wait_for_slot: opts.wait_for_slot === true };
 	const base = { model: model_name(), rule_ids: [], ruling_fids: [], cards: [] };
@@ -367,7 +370,7 @@ export async function answer_question(question, opts = {}) {
 		sel = { sections: opts.force_sections, cards: opts.force_cards ?? [] };
 	}
 	else {
-		const sel_res = await generate(SELECT_PROMPT(build_toc(), question),
+		const sel_res = await gen_fn(SELECT_PROMPT(build_toc(), question),
 			{ stage: 'select', json: true, max_tokens: 4096, thinking_budget: 1024, temperature: 0, ...gen });
 		if (sel_res.error)
 			return { ...base, refused: true, answer: '目前無法查詢，請稍後再試。', error: sel_res.error };
@@ -458,7 +461,7 @@ export async function answer_question(question, opts = {}) {
 		ruling: new Map(rulings_n.map(r => [r.fid, r.sents])),
 		card: new Map(cards_n.map(c => [c.id, c.sents])),
 	};
-	const ans_res = await generate(ANSWER_PROMPT(question, rules_n, rulings_n, cards_n),
+	const ans_res = await gen_fn(ANSWER_PROMPT(question, rules_n, rulings_n, cards_n),
 		{ stage: 'answer', json: true, max_tokens: 8192, thinking_budget: 2048, temperature: 0, ...gen });
 	if (ans_res.error)
 		return { ...base, cards: resolved, refused: true, answer: '目前無法查詢，請稍後再試。', error: ans_res.error };
@@ -518,7 +521,7 @@ export async function answer_question(question, opts = {}) {
 	// ⚠️ 多一次模型呼叫（用第二段的供應者），所以預設關閉；fail-closed：
 	//    檢查本身失敗或輸出看不懂，也當作沒通過。
 	if (!refused && process.env.ASK_RELEVANCE_CHECK === '1' && quotes.length) {
-		const bad = await check_relevance(question, parsed.answer, quotes, gen);
+		const bad = await check_relevance(question, parsed.answer, quotes, gen, gen_fn);
 		if (bad.length) {
 			console.warn(`[ask] 相關性檢查未通過 ${bad.join('、')}｜問題：${question}`);
 			return {
