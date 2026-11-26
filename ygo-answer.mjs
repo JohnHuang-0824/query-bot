@@ -15,7 +15,7 @@ import { generate, model_name } from './ygo-llm.mjs';
 import { build_toc, collect_sections, expand_stubs, get_section, toc_rows, corpus_state } from './ygo-rules.mjs';
 import { resolve_id, display_name } from './ygo-alias.mjs';
 import { get_card } from './ygo-query.mjs';
-import { cache_state, fetch_rulings, get_rulings, get_ruling, ensure_detail } from './ygo-ruling.mjs';
+import { refresh_rulings, get_rulings, get_ruling, ensure_detail } from './ygo-ruling.mjs';
 
 // ⚠️ 3 節太少。實測「P 牌放進 P 區算不算魔法卡的發動」這題：關鍵那句話
 //    在[21] 卡的发动，而目錄裡標題含「发动」的章節就有 50 節 —— 只挑 3 節
@@ -414,8 +414,8 @@ export async function answer_question(question, opts = {}) {
 		// 先行卡與剛發售的卡還沒有官方編號：卡文照附，只是沒有裁定可查。
 		if (!card.cid)
 			continue;
-		if (allow_fetch && !cache_state(card.cid).fetched)
-			await fetch_rulings(card.cid);
+		if (allow_fetch)
+			await refresh_rulings(card.cid);
 		for (const r of get_rulings(card.cid).slice(0, MAX_RULINGS)) {
 			if (!rulings.some(x => x.fid === r.fid))
 				rulings.push(r);
@@ -423,8 +423,9 @@ export async function answer_question(question, opts = {}) {
 	}
 	base.unresolved = unresolved;
 	// 只把要送進去的那幾條抓全文，其餘留標題就好 —— 每多一條就是一次請求。
+	// 手上的全文夠不夠新由 ensure_detail 判斷，夠新就不發請求。
 	for (const r of rulings.slice(0, MAX_RULINGS)) {
-		if (!r.answer && allow_fetch)
+		if (allow_fetch)
 			await ensure_detail(r.fid);
 	}
 	const ruling_ctx = rulings.slice(0, MAX_RULINGS)

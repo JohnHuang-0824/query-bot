@@ -26,6 +26,9 @@ const USER_AGENT = 'ygo-ruling-bot/0.1 (+https://github.com/JohnHuang-0824/query
 /** 清單快取多久算過期。裁定很少變動，所以拉長。 */
 export const LIST_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
+/** 全文快取多久算過期。見 ensure_detail。 */
+const DETAIL_TTL_MS = LIST_TTL_MS;
+
 /**
  * ⚠️ 節流與熔斷 —— 這一段是合規的實作，不是效能調校。
  *
@@ -39,12 +42,15 @@ const RATE = {
 	PER_MINUTE: 20,
 	/** 一天最多幾次。超過就熔斷，全部走降級模式。 */
 	PER_DAY: 800,
+	/** 單次請求等多久（毫秒）。逾時當成失敗，沿用快取。 */
+	TIMEOUT_MS: 15_000,
 	/** 清單分頁上限。一張卡超過這個量就不再往下抓。 */
 	MAX_PAGES: 3,
 	RP: 100,
 };
 
-const RULING_DB = new URL('./db/ruling.db', import.meta.url).pathname;
+// YGO_RULING_DB 是給測試換掉快取用的（':memory:'），部署不要設。
+const RULING_DB = process.env.YGO_RULING_DB || new URL('./db/ruling.db', import.meta.url).pathname;
 const db = new DatabaseSync(RULING_DB);
 
 db.exec(`
@@ -118,10 +124,20 @@ const stmt_by_cid = db.prepare(`
 	ORDER BY r.updated_at DESC, r.fid DESC
 `);
 const stmt_fetch_state = db.prepare('SELECT fetched_at, total, complete FROM card_fetch WHERE cid = ?');
-const stmt_get_ruling = db.prepare('SELECT fid, question, answer, updated_at FROM ruling WHERE fid = ?');
+const stmt_get_ruling = db.prepare('SELECT fid, question, answer, updated_at, fetched_at FROM ruling WHERE fid = ?');
+// ⚠️ 清單上的更新日變了 = 裁定改版，舊全文要丟掉 —— 留著就是新日期配舊內容。
+//    日期沒變就保留全文，問題也保留明細頁那一版（清單上的是標題）。
+//    清單解析不出日期（NULL）時當作沒變，不能因為頁面改版就把全文清光。
 const stmt_upsert_list = db.prepare(`
 	INSERT INTO ruling (fid, question, updated_at, fetched_at) VALUES (?, ?, ?, ?)
-	ON CONFLICT(fid) DO UPDATE SET question = excluded.question, updated_at = excluded.updated_at
+	ON CONFLICT(fid) DO UPDATE SET
+		question = CASE
+			WHEN ruling.answer IS NOT NULL AND coalesce(excluded.updated_at, ruling.updated_at) IS ruling.updated_at
+			THEN ruling.question ELSE excluded.question END,
+		answer = CASE
+			WHEN coalesce(excluded.updated_at, ruling.updated_at) IS ruling.updated_at
+			THEN ruling.answer END,
+		updated_at = coalesce(excluded.updated_at, ruling.updated_at)
 `);
 const stmt_upsert_detail = db.prepare('UPDATE ruling SET question = ?, answer = ?, updated_at = ?, fetched_at = ? WHERE fid = ?');
 const stmt_link = db.prepare('INSERT OR IGNORE INTO ruling_card (fid, cid) VALUES (?, ?)');
@@ -206,12 +222,23 @@ async function polite_fetch(url) {
 	// ⚠️ 發出前就記，失敗的請求對方一樣算。
 	record('konami');
 
-	const res = await fetch(url, { headers: { 'User-Agent': USER_AGENT } });
-	if (!res.ok) {
-		console.error(`[ruling] HTTP ${res.status} ${url}`);
+	// ⚠️ 連不上、逾時也要回 null，不能丟例外 —— 呼叫端手上多半還有舊快取
+	//    可以用，一次抓取失敗不該讓整個指令掛掉。
+	try {
+		const res = await fetch(url, {
+			headers: { 'User-Agent': USER_AGENT },
+			signal: AbortSignal.timeout(RATE.TIMEOUT_MS),
+		});
+		if (!res.ok) {
+			console.error(`[ruling] HTTP ${res.status} ${url}`);
+			return null;
+		}
+		return await res.text();
+	}
+	catch (error) {
+		console.error(`[ruling] 連線失敗 ${error.message}｜${url}`);
 		return null;
 	}
-	return res.text();
 }
 
 // ---------------------------------------------------------------- 解析
@@ -346,24 +373,42 @@ export async function fetch_rulings(cid) {
 }
 
 /**
- * 確保某條裁定有明細（質問／回答全文）。已經有就不重抓。
+ * 清單沒抓過或超過 LIST_TTL_MS 就重抓。抓不到時什麼都不動，沿用快取。
+ *
+ * ⚠️ /ruling 和 /ask 都走這裡。/ask 一度只判斷「抓過沒有」，結果抓過一次的
+ *    卡永遠停在那一天，之後發布的裁定它看不到。
+ * @param {number} cid
+ */
+export async function refresh_rulings(cid) {
+	const state = cache_state(cid);
+	if (!state.fetched || !state.fresh)
+		await fetch_rulings(cid);
+}
+
+/**
+ * 確保某條裁定有夠新的明細（質問／回答全文）。
+ *
+ * 官網改裁定不一定改更新日（實測過：日期相同，回答末尾的卡名清單多了一張），
+ * 所以除了清單日期變了要重抓（見 stmt_upsert_list），超過 DETAIL_TTL_MS
+ * 也重抓。重抓失敗時沿用手上的全文。
  * @param {number} fid
  * @returns {Promise<boolean>} 是否拿得到明細
  */
 export async function ensure_detail(fid) {
 	const row = stmt_get_ruling.get(fid);
-	if (row?.answer)
+	const cached = Boolean(row?.answer);
+	if (cached && Date.now() - row.fetched_at < DETAIL_TTL_MS)
 		return true;
 
 	const params = new URLSearchParams({ ope: '5', fid: String(fid), request_locale: 'ja' });
 	const html = await polite_fetch(`${BASE}?${params}`);
 	if (html === null)
-		return false;
+		return cached;
 
 	const detail = parse_detail(html);
 	if (!detail) {
 		console.error(`[ruling] 解析失敗 fid=${fid} —— 官方頁結構可能改版了`);
-		return false;
+		return cached;
 	}
 	stmt_upsert_detail.run(detail.question, detail.answer, detail.updated_at, Date.now(), fid);
 	// ⚠️ 這裡**故意不寫 ruling_card**。關聯只能來自清單頁，見 parse_detail 的說明。

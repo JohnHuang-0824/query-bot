@@ -15,7 +15,8 @@
 
 import { DatabaseSync } from 'node:sqlite';
 
-const db = new DatabaseSync(new URL('./db/ruling.db', import.meta.url).pathname);
+// YGO_RULING_DB 是給測試用的，同 ygo-ruling.mjs。
+const db = new DatabaseSync(process.env.YGO_RULING_DB || new URL('./db/ruling.db', import.meta.url).pathname);
 db.exec(`
 	CREATE TABLE IF NOT EXISTS rate_event (
 		source TEXT    NOT NULL,

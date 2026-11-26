@@ -3,7 +3,7 @@ import { get_card } from '../ygo-query.mjs';
 import { suggest, resolve_id, display_name } from '../ygo-alias.mjs';
 import {
 	cache_state, get_rulings, get_common_rulings,
-	fetch_rulings, ensure_detail, qa_link, breaker_state,
+	refresh_rulings, ensure_detail, qa_link, breaker_state,
 } from '../ygo-ruling.mjs';
 
 export const module_url = import.meta.url;
@@ -120,11 +120,8 @@ export async function execute(interaction) {
 
 	// 快取沒有或過期才抓。⚠️ 第一次查某張卡會明顯變慢（實測 6～14 秒），
 	// 那是 on-demand 的代價 —— 不做預抓是合規要求，不是效能取捨。
-	for (const card of cards) {
-		const state = cache_state(card.cid);
-		if (!state.fetched || !state.fresh)
-			await fetch_rulings(card.cid);
-	}
+	for (const card of cards)
+		await refresh_rulings(card.cid);
 
 	const rulings = card2
 		? get_common_rulings(card1.cid, card2.cid)

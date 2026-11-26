@@ -10,7 +10,12 @@
  * 檔尾的整條流程測試用假模型（opts.gen_fn），但需要本機的規則語料與卡表（db/）。
  * ⚠️ 匯入卡表會重寫 db/query.cdb，而 node --test 是各檔案平行跑 —— 會載入卡表的
  *    測試都放這個檔案，另開一個會有兩個行程同時寫、把資料庫弄壞。
+ *
+ * 裁定快取與節流開在記憶體（下面第一個 import），不碰本機快取。
  */
+
+// ⚠️ 一定要是第一個 import：下面的模組一載入就開資料庫了。
+import 'data:text/javascript,process.env.YGO_RULING_DB = ":memory:";';
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -275,6 +280,7 @@ test('展開：目錄裡找不到的編號原樣保留、不炸', () => {
 import { answer_question } from '../ygo-answer.mjs';
 import { toc_rows, get_section, corpus_state } from '../ygo-rules.mjs';
 import { resolve_id } from '../ygo-alias.mjs';
+import { LIST_TTL_MS } from '../ygo-ruling.mjs';
 import { get_card } from '../ygo-query.mjs';
 import { choice_table } from '../common_all.js';
 
@@ -364,6 +370,33 @@ test('流程：沒有官方編號的卡，卡文照樣送進第二段，但不�
 	assert.equal(r.cards.length, 1);
 	assert.deepEqual(r.ruling_fids, []);
 	assert.deepEqual(r.unresolved, []);
+});
+
+test('流程：裁定快取過期時重抓，新裁定和改過的全文送進第二段', needs_corpus, async t => {
+	// 假的官方站：清單加明細。時鐘每個請求往前撥一點，免得節流真的去等。
+	const site = { 201: '舊的回答內容在這裡。' };
+	const real_now = Date.now;
+	let skew = 0;
+	t.mock.method(Date, 'now', () => real_now() + skew);
+	t.mock.method(globalThis, 'fetch', async url => {
+		const q = new URL(url).searchParams;
+		skew += 2000;
+		if (q.get('ope') === '5')
+			return new Response(`<span>2026-01-01</span><div id="question_text">可以發動嗎？</div><div id="answer_text">${site[q.get('fid')]}</div>`);
+		return new Response(`全${Object.keys(site).length}件` + Object.keys(site).map(fid =>
+			`<div class="t_row"><span class="name">標題</span><span>更新日:</span> 2026-01-01 ope=5&fid=${fid}</div>`).join(''));
+	});
+	const run = () => ask(t, [select([LEAF.id], [CARD.name]), reply()], { allow_fetch: true });
+
+	const first = await run();
+	assert.ok(first.calls[1].prompt.includes('舊的回答內容在這裡'));
+
+	site[201] = '改過的回答內容在這裡。';
+	site[202] = '後來發布的新裁定內容。';
+	skew += LIST_TTL_MS;
+	const second = await run();
+	assert.ok(second.calls[1].prompt.includes('改過的回答內容在這裡'));
+	assert.ok(second.calls[1].prompt.includes('後來發布的新裁定內容'));
 });
 
 test('流程：卡表裡沒有的卡號算解析不到', needs_corpus, async t => {
