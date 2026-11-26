@@ -39,15 +39,22 @@
  *   不要只看「拒答了幾題」。
  *
  *   YGO_DEBUG=1 會多印模型的原始 cites 與相關性審查的原始輸出，查「為什麼被擋」時用。
+ *
+ * ── 改了評分方式之後 ─────────────────────────────────────────────────
+ *
+ *   模型的回答會存到 db/eval-runs/（不進版控、不打包進映像 —— 裡面有官方
+ *   裁定的引文）。改了 gold 或字串檢查，用存下來的回答重算就好，不用再花額度：
+ *
+ *   node eval/rescore.mjs
  */
 
-import { readFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { suggest, resolve_id, display_name } from '../ygo-alias.mjs';
 import { get_card } from '../ygo-query.mjs';
 import { cache_state, fetch_rulings, get_common_rulings } from '../ygo-ruling.mjs';
 import { answer_question } from '../ygo-answer.mjs';
 import { get_section } from '../ygo-rules.mjs';
-import { bad_conclusions } from './conclude.mjs';
+import { REASON_TEXT, score_answer } from './score.mjs';
 
 const ALLOW_FETCH = process.argv.includes('--fetch');
 
@@ -63,15 +70,32 @@ const ONLY = (process.argv.find(a => a.startsWith('--only=')) ?? '').slice(7)
 const answers = [];
 // 拒答原因統計（見 ygo-answer.mjs 回傳的 reason）。要算「誤拒答率」時，
 // 光知道拒答了不夠 —— 是模型自己拒、引文驗證擋的、還是相關性檢查擋的，意義完全不同。
-const REASON_TEXT = {
-	model: '模型自己拒答',
-	bad_quote: '引文驗證失敗（編造或亂改）',
-	mention_gap: '提到規則／裁定卻沒有對應引用',
-	relevance: '相關性檢查未通過',
-	no_cite: '沒有任何有效引用',
-	no_evidence: '沒有可用的依據（章節與裁定都沒命中）',
-};
 const refusal_tally = new Map();
+
+// 回答存檔（見檔頭）。每答一題就整份重寫，中途斷掉也留得住前面花掉的額度。
+const STARTED_AT = new Date().toISOString();
+const RUN_FILE = new URL(`../db/eval-runs/${STARTED_AT.replace(/[:.]/g, '-')}.json`, import.meta.url);
+const saved = [];
+let save_error = '';
+function save_answer(c, r, rule_paths) {
+	saved.push({
+		id: c.id, question: c.question, answer: r.answer, refused: r.refused, reason: r.reason,
+		rule_ids: r.rule_ids, rule_paths, ruling_fids: r.ruling_fids, quotes: r.quotes, dropped: r.dropped,
+	});
+	const settings = {
+		fetch: ALLOW_FETCH,
+		relevance_check: process.env.ASK_RELEVANCE_CHECK === '1',
+		gemini_model: process.env.GEMINI_MODEL || null,
+	};
+	// 存檔失敗不能讓這題變成紅燈，結尾再講
+	try {
+		mkdirSync(new URL('.', RUN_FILE), { recursive: true });
+		writeFileSync(RUN_FILE, JSON.stringify({ started_at: STARTED_AT, settings, results: saved }, null, '\t'));
+	}
+	catch (error) {
+		save_error = error.message;
+	}
+}
 const spec = JSON.parse(readFileSync(new URL('./cases.json', import.meta.url), 'utf8'));
 const rules_spec = JSON.parse(readFileSync(new URL('./rules-cases.json', import.meta.url), 'utf8'));
 const all_cases = [...spec.cases, ...rules_spec.cases];
@@ -230,58 +254,11 @@ async function run_rules(c) {
 	if (r.refused && r.reason)
 		refusal_tally.set(r.reason, [...(refusal_tally.get(r.reason) ?? []), c.id]);
 
-	const e = c.expect ?? {};
-	const bad = [];
+	// 章節路徑現在就取好存起來 —— 規則語料重新匯入後編號會移動
+	const rule_paths = r.rule_ids.map(id => get_section(id)?.path ?? '');
+	save_answer(c, r, rule_paths);
 
-	if (e.must_refuse === true && !r.refused)
-		bad.push('預期拒答，實際給了結論');
-	// 作答題（must_refuse: false，或有必要內容的題目）拒答一律算失敗。
-	// ⚠️ 不能靠必要內容的字面比對擋 —— 拒答文字常常複述問題（「回合玩家是否可以
-	//    選擇先發動選發效果，而不是必發效果」），「可以」「必發」「選發」全都命中，
-	//    rules-004 就這樣假通過過一次。沒有必要內容的題目（rules-012）仍然可以拒答。
-	const needs_answer = e.must_refuse === false
-		|| (e.must_refuse !== true && Boolean(e.must_contain?.length || e.must_contain_any?.length));
-	const wrongly_refused = needs_answer && r.refused;
-	if (wrongly_refused)
-		bad.push(`不該拒答卻拒答了（原因：${REASON_TEXT[r.reason] ?? r.reason ?? '未標示'}）`);
-
-	// 結論不可以是這個樣子。⚠️ 只在**沒拒答**時檢查 —— 拒答的字面裡可能剛好有
-	//    「可以」，這裡不管拒答（作答題拒答由上面那條判失敗）。用正規表達式是因為
-	//    「可以發動」是「不可以發動」的子字串，單純比字串會誤判。引號裡的引文不算。
-	if (!r.refused) {
-		for (const re of bad_conclusions(r.answer, e.must_not_conclude))
-			bad.push(`給出了不該有的結論（符合 /${re}/）`);
-	}
-
-	for (const w of e.must_not_contain ?? []) {
-		if (r.answer.includes(w))
-			bad.push(`出現禁用字眼「${w}」`);
-	}
-	// 錯誤拒答時不比對必要內容：命中了不算數，缺了也只是重複上面那一條。
-	for (const w of wrongly_refused ? [] : e.must_contain ?? []) {
-		if (!r.answer.includes(w))
-			bad.push(`缺少必要內容「${w}」`);
-	}
-	// 同義詞：每一組至少要出現一個（答案寫「無法」或「不能」都算數）。
-	for (const group of wrongly_refused ? [] : e.must_contain_any ?? []) {
-		if (!group.some(w => r.answer.includes(w)))
-			bad.push(`缺少必要內容（以下任一）「${group.join('」「')}」`);
-	}
-	if (e.max_chars && r.answer.length > e.max_chars)
-		bad.push(`回答 ${r.answer.length} 字，超過上限 ${e.max_chars}`);
-
-	// 期望引用到的章節：比對實際引用章節的路徑
-	const paths = r.rule_ids.map(id => get_section(id)?.path ?? '').join(' | ');
-	for (const want of e.cites ?? []) {
-		if (!paths.includes(want))
-			bad.push(`沒引用到「${want}」，實際引用：${paths || '無'}`);
-	}
-
-	// ⚠️ 模型編造引用是重大缺陷，不是小瑕疵 —— 管線雖然已經把它丟掉了，
-	//    但它發生過這件事本身就要讓這題紅燈。
-	if (r.dropped?.length)
-		bad.push(`模型編造了引用：${r.dropped.join(' ')}`);
-
+	const bad = score_answer(c, r, rule_paths);
 	return check(c, bad.length === 0, bad.join('；'));
 }
 
@@ -374,4 +351,9 @@ if (failures.length) {
 	for (const f of failures)
 		console.log(`  ${f.id}\n    ${f.detail}\n    這題在測：${f.why ?? '（沒寫 why —— 補上，否則之後沒人知道它為什麼存在）'}`);
 }
+
+if (save_error)
+	console.log(`\n⚠️ 回答沒存到檔案（${save_error}），改評分後要重跑。`);
+else if (saved.length)
+	console.log(`\n${saved.length} 題回答存在 db/eval-runs/${RUN_FILE.pathname.split('/').pop()}（改評分後用 node eval/rescore.mjs 重算）`);
 process.exit(results.fail ? 1 : 0);

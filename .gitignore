@@ -1,4 +1,6 @@
 /node_modules
 /db/*.cdb
 /db/*.db
+# 評測存下的模型回答，裡面有官方裁定的引文（不轉散布）
+/db/eval-runs/
 .env
