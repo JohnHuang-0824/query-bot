@@ -9,6 +9,9 @@
  *
  * ⚠️ 一次請求抓整包，而不是 41 次抓個別檔案 —— 對別人的站永遠選請求
  *    數少的那條路。
+ *
+ * 解析結果比現有語料少兩成以上時會中止、保留原本的（見 import_sections）。
+ * 確認來源沒問題的話，指令後面加 --force。
  */
 
 import { execFileSync } from 'node:child_process';
@@ -54,7 +57,7 @@ try {
 		sections.push(...parse_rst(readFileSync(f, 'utf8'), rel));
 	}
 
-	const state = import_sections(sections);
+	const state = import_sections(sections, { force: process.argv.includes('--force') });
 	console.log(`匯入完成：${state.sections} 節 / ${(state.chars / 1000).toFixed(0)} 千字`);
 	console.log(`目錄大小：${build_toc().length} 字（這是每次問答第一段要送進模型的量）`);
 }

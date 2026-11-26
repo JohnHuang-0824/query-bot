@@ -17,7 +17,9 @@
 
 import { DatabaseSync } from 'node:sqlite';
 
-const DB_PATH = new URL('./db/ruling.db', import.meta.url).pathname;
+// YGO_RULES_DB 是給匯入的測試換掉語料用的，部署不要設。跟裁定快取分開兩個
+// 變數：問答流程的測試要換掉快取，但需要真的語料。
+const DB_PATH = process.env.YGO_RULES_DB || new URL('./db/ruling.db', import.meta.url).pathname;
 const db = new DatabaseSync(DB_PATH);
 
 const SCHEMA_VERSION = 4;
@@ -146,13 +148,43 @@ export function parse_rst(text, file) {
 	return out;
 }
 
-/** 整批匯入。會先清空舊資料 —— 語料是可重建的，不做增量。 */
-export function import_sections(sections) {
-	stmt_clear.run();
-	let id = 1;
-	for (const s of sections)
-		stmt_insert.run(id++, s.file, s.title, s.path, s.level, s.body, s.chars);
-	stmt_meta_set.run('imported_at', new Date().toISOString());
+/** 新語料的節數或字數低於現有的這個比例就不覆蓋 */
+const MIN_KEEP = 0.8;
+
+/**
+ * 整批匯入。會先清空舊資料 —— 語料是可重建的，不做增量。
+ *
+ * ⚠️ 來源是別人的倉庫，改個版面就可能解析出空的、或缺一大塊。照樣覆蓋的話
+ *    /ask 會整個不能用，或只剩一部分依據而沒人發現。所以解析結果不對勁就
+ *    中止、保留原本的語料。清空和寫入在同一個交易裡，半途失敗不會留下半套。
+ *
+ * @param {{file:string,title:string,path:string,level:number,body:string,chars:number}[]} sections
+ * @param {{force?: boolean}} [opts] force：確認過來源沒問題，跳過縮水檢查
+ *   （0 節一律拒絕）
+ */
+export function import_sections(sections, { force = false } = {}) {
+	if (!sections.length)
+		throw new Error('解析結果是 0 節，保留原本的語料。來源的格式可能改了。');
+	const old = corpus_state();
+	const chars = sections.reduce((n, s) => n + s.chars, 0);
+	if (!force && (sections.length < old.sections * MIN_KEEP || chars < old.chars * MIN_KEEP)) {
+		throw new Error(`新語料只有 ${sections.length} 節／${chars} 字，現有 ${old.sections} 節／${old.chars} 字，`
+			+ '少太多，保留原本的語料。確認來源沒問題再加 --force。');
+	}
+
+	db.exec('BEGIN IMMEDIATE');
+	try {
+		stmt_clear.run();
+		let id = 1;
+		for (const s of sections)
+			stmt_insert.run(id++, s.file, s.title, s.path, s.level, s.body, s.chars);
+		stmt_meta_set.run('imported_at', new Date().toISOString());
+		db.exec('COMMIT');
+	}
+	catch (error) {
+		db.exec('ROLLBACK');
+		throw error;
+	}
 	return corpus_state();
 }
 
