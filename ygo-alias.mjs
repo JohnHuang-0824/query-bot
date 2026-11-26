@@ -19,44 +19,12 @@ import { readFileSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { choice_table } from './common_all.js';
 import { report_hidden_cards } from './ygo-datacheck.mjs';
+import { ensure_alias_schema } from './ygo-alias-schema.mjs';
 
 const DB_PATH = new URL('./db/ruling.db', import.meta.url).pathname;
 const db = new DatabaseSync(DB_PATH);
 
-const SCHEMA_VERSION = 3;
-{
-	const v = db.prepare('PRAGMA user_version').get().user_version;
-	if (v < 2) {
-		db.exec(`
-			CREATE TABLE IF NOT EXISTS card_alias (
-				norm    TEXT    NOT NULL,
-				card_id INTEGER NOT NULL,
-				raw     TEXT    NOT NULL,
-				kind    TEXT    NOT NULL,
-				weight  INTEGER NOT NULL DEFAULT 0,
-				PRIMARY KEY (norm, card_id)
-			);
-			CREATE INDEX IF NOT EXISTS idx_card_alias_norm ON card_alias (norm);
-		`);
-	}
-	if (v < 3) {
-		// v3：提案流程。status 決定這條別名算不算數 ——
-		// 'proposed' 只存著不進索引，'approved' 才會被 suggest 看到。
-		for (const [col, ddl] of [
-			['status', "TEXT NOT NULL DEFAULT 'approved'"],
-			['proposed_by', 'TEXT'],
-			['created_at', 'INTEGER'],
-		]) {
-			if (!db.prepare('PRAGMA table_info(card_alias)').all().some(c => c.name === col))
-				db.exec(`ALTER TABLE card_alias ADD COLUMN ${col} ${ddl}`);
-		}
-		db.exec('CREATE INDEX IF NOT EXISTS idx_card_alias_status ON card_alias (status)');
-	}
-	if (v < SCHEMA_VERSION) {
-		db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
-		console.log(`[alias] schema 遷移 ${v} -> ${SCHEMA_VERSION}`);
-	}
-}
+ensure_alias_schema(db);
 
 // ⚠️ 只撈 approved。提案不進索引 —— 沒審過的俗稱指錯卡的話，使用者
 //    看到的是「查了某張卡的裁定」卻拿到另一張卡的結果，比查不到更糟。

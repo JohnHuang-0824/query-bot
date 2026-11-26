@@ -80,7 +80,7 @@ CREATE TABLE IF NOT EXISTS card_fetch (
 );
 `);
 
-// ⚠️ schema 遷移 —— 用 PRAGMA user_version，不要靠 CREATE TABLE IF NOT EXISTS。
+// ⚠️ schema 遷移 —— 不要只靠 CREATE TABLE IF NOT EXISTS。
 //
 //    那個寫法只建新表，**既有的表一律原封不動**：加欄位不會加、改約束
 //    不會改，而且完全不報錯。開發時已經因此踩過兩次（card_fetch 少了
@@ -89,30 +89,29 @@ CREATE TABLE IF NOT EXISTS card_fetch (
 //
 //    ruling.db 是長期累積的快取，不能每次改 schema 就砍掉重建，所以
 //    改 schema 時：把上面的 CREATE 改成新樣子，然後在下面加一段遷移。
-const SCHEMA_VERSION = 1;
-const current_version = db.prepare('PRAGMA user_version').get().user_version;
+//
+// ⚠️ 要不要遷移看實際的欄位，**不要用 PRAGMA user_version**：這個檔好幾個
+//    模組共用，版本號只有一個，別的模組寫大了這裡就會整段跳過。
 
-if (current_version < 1) {
-	// v1：answer 從 NOT NULL 放寬成可為 NULL（清單先寫入、明細之後補），
-	//     card_fetch 補 complete 欄位。
-	const cols = db.prepare('PRAGMA table_info(ruling)').all();
-	if (cols.some(c => c.name === 'answer' && c.notnull)) {
-		// SQLite 不能直接放寬約束，只能重建再搬 —— 這是官方建議的做法。
-		db.exec(`
-			CREATE TABLE ruling_new (
-				fid INTEGER PRIMARY KEY, question TEXT NOT NULL, answer TEXT,
-				updated_at TEXT, fetched_at INTEGER NOT NULL
-			);
-			INSERT INTO ruling_new SELECT fid, question, answer, updated_at, fetched_at FROM ruling;
-			DROP TABLE ruling;
-			ALTER TABLE ruling_new RENAME TO ruling;
-		`);
-	}
-	if (!db.prepare('PRAGMA table_info(card_fetch)').all().some(c => c.name === 'complete'))
-		db.exec('ALTER TABLE card_fetch ADD COLUMN complete INTEGER NOT NULL DEFAULT 1');
-
-	db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
-	console.log(`[ruling] schema 遷移 ${current_version} -> ${SCHEMA_VERSION}`);
+// answer 從 NOT NULL 放寬成可為 NULL（清單先寫入、明細之後補）
+if (db.prepare('PRAGMA table_info(ruling)').all().some(c => c.name === 'answer' && c.notnull)) {
+	// SQLite 不能直接放寬約束，只能重建再搬 —— 這是官方建議的做法。
+	db.exec(`
+		BEGIN;
+		CREATE TABLE ruling_new (
+			fid INTEGER PRIMARY KEY, question TEXT NOT NULL, answer TEXT,
+			updated_at TEXT, fetched_at INTEGER NOT NULL
+		);
+		INSERT INTO ruling_new SELECT fid, question, answer, updated_at, fetched_at FROM ruling;
+		DROP TABLE ruling;
+		ALTER TABLE ruling_new RENAME TO ruling;
+		COMMIT;
+	`);
+	console.log('[ruling] ruling.answer 改為可空');
+}
+if (!db.prepare('PRAGMA table_info(card_fetch)').all().some(c => c.name === 'complete')) {
+	db.exec('ALTER TABLE card_fetch ADD COLUMN complete INTEGER NOT NULL DEFAULT 1');
+	console.log('[ruling] card_fetch 補欄位 complete');
 }
 
 const stmt_by_cid = db.prepare(`

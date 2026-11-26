@@ -22,30 +22,24 @@ import { DatabaseSync } from 'node:sqlite';
 const DB_PATH = process.env.YGO_RULES_DB || new URL('./db/ruling.db', import.meta.url).pathname;
 const db = new DatabaseSync(DB_PATH);
 
-const SCHEMA_VERSION = 4;
-{
-	const v = db.prepare('PRAGMA user_version').get().user_version;
-	if (v < 4) {
-		db.exec(`
-			CREATE TABLE IF NOT EXISTS rule_section (
-				id        INTEGER PRIMARY KEY,
-				file      TEXT    NOT NULL,
-				title     TEXT    NOT NULL,
-				path      TEXT    NOT NULL,
-				level     INTEGER NOT NULL,
-				body      TEXT    NOT NULL,
-				chars     INTEGER NOT NULL
-			);
-			CREATE INDEX IF NOT EXISTS idx_rule_section_file ON rule_section (file);
-			CREATE TABLE IF NOT EXISTS rule_meta (
-				key   TEXT PRIMARY KEY,
-				value TEXT
-			);
-		`);
-		db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
-		console.log(`[rules] schema 遷移 ${v} -> ${SCHEMA_VERSION}`);
-	}
-}
+// 這個檔好幾個模組共用，PRAGMA user_version 只有一個，所以不用它（見
+// ygo-alias-schema.mjs）。
+db.exec(`
+	CREATE TABLE IF NOT EXISTS rule_section (
+		id        INTEGER PRIMARY KEY,
+		file      TEXT    NOT NULL,
+		title     TEXT    NOT NULL,
+		path      TEXT    NOT NULL,
+		level     INTEGER NOT NULL,
+		body      TEXT    NOT NULL,
+		chars     INTEGER NOT NULL
+	);
+	CREATE INDEX IF NOT EXISTS idx_rule_section_file ON rule_section (file);
+	CREATE TABLE IF NOT EXISTS rule_meta (
+		key   TEXT PRIMARY KEY,
+		value TEXT
+	);
+`);
 
 const stmt_insert = db.prepare(
 	'INSERT INTO rule_section (id, file, title, path, level, body, chars) VALUES (?, ?, ?, ?, ?, ?, ?)');
