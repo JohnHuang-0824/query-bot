@@ -1,0 +1,44 @@
+# push 到 master 與開 PR 時跑 lint、單元測試和離線評測。
+#
+# 不需要任何金鑰：模型與 Konami 官網在測試裡是假的，離線評測不連它們。
+# 唯一的對外下載是套件，以及 bot 啟動時本來就會抓的卡表（上游 Release）。
+#
+# ⚠️ fork 出來的倉庫預設不執行 workflow，要到 GitHub 的 Actions 分頁啟用一次。
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # 版本釘 commit，標籤是可以被移動的
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 26 # 跟 Dockerfile 一致
+
+      # 套件管理器同 Dockerfile：lockfile 是 pnpm 的
+      - run: npm install -g pnpm@9 --no-fund --no-audit
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm exec eslint .
+
+      - run: node --test test/
+
+      - run: node eval/run.mjs
