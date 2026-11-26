@@ -34,11 +34,14 @@ const RATE = {
 	// 沒有每日硬上限；給一個誇張的數字讓 blocked_reason 永遠不因每日跳出
 	PER_DAY: Number(process.env.CLAUDE_RPD) || 1_000_000,
 	MAX_RETRY: 2,
+	// 單次請求（含讀回應）等多久，理由同 ygo-gemini.mjs
+	TIMEOUT_MS: 90_000,
 };
 
 const JSON_SYSTEM = '只輸出一個 JSON 物件，不要有任何其他文字、說明或 markdown 程式碼框。';
 
-const db = new DatabaseSync(new URL('./db/ruling.db', import.meta.url).pathname);
+// YGO_RULING_DB 是給測試用的，同 ygo-ruling.mjs。
+const db = new DatabaseSync(process.env.YGO_RULING_DB || new URL('./db/ruling.db', import.meta.url).pathname);
 db.exec(`
 	CREATE TABLE IF NOT EXISTS claude_usage (
 		day    TEXT PRIMARY KEY,
@@ -101,7 +104,7 @@ export async function generate(prompt, opts = {}) {
 		// ⚠️ 發出前就記。失敗的請求對方一樣算，我們也要算。
 		record('claude');
 
-		let res;
+		let res, raw;
 		try {
 			res = await fetch(URL_MESSAGES, {
 				method: 'POST',
@@ -111,16 +114,22 @@ export async function generate(prompt, opts = {}) {
 					'anthropic-version': '2023-06-01',
 				},
 				body: JSON.stringify(body),
+				signal: AbortSignal.timeout(RATE.TIMEOUT_MS),
 			});
+			// 內文在這裡一次讀完：讀到一半斷線或逾時也要回 {error}，不能丟例外
+			raw = await res.text();
 		}
 		catch (err) {
 			stmt_bump.run(quota_day(), 1, 0, 1);
-			return { error: `連線失敗：${err.message}` };
+			return {
+				error: err.name === 'TimeoutError'
+					? `模型 ${RATE.TIMEOUT_MS / 1000} 秒內沒有回應`
+					: `連線失敗：${err.message}`,
+			};
 		}
 
 		// 429 與 529（過載）都是「等一下再來」。退避時間聽對方的 retry-after。
 		if (res.status === 429 || res.status === 529) {
-			await res.text();
 			const delay_ms = Math.round(parseFloat(res.headers.get('retry-after') ?? '') * 1000) || 2000 * (attempt + 1);
 			const cap = opts.wait_for_slot ? 70_000 : 5_000;
 			if (attempt < RATE.MAX_RETRY && delay_ms <= cap) {
@@ -131,7 +140,7 @@ export async function generate(prompt, opts = {}) {
 			return { error: `HTTP ${res.status}，對方要求等 ${Math.round(delay_ms / 1000)} 秒` };
 		}
 		if (!res.ok) {
-			const detail = (await res.text()).slice(0, 300);
+			const detail = raw.slice(0, 300);
 			// 部分新模型不接受 temperature。只退一次，拿掉它重送。
 			if (res.status === 400 && 'temperature' in body && /temperature/i.test(detail)) {
 				delete body.temperature;
@@ -141,19 +150,26 @@ export async function generate(prompt, opts = {}) {
 			return { error: `HTTP ${res.status}：${detail}` };
 		}
 
-		const data = await res.json();
-		const text = (data.content ?? []).filter(b => b.type === 'text').map(b => b.text).join('');
-		const tokens = (data.usage?.input_tokens ?? 0) + (data.usage?.output_tokens ?? 0);
+		let data;
+		try {
+			data = JSON.parse(raw);
+		}
+		catch {
+			stmt_bump.run(quota_day(), 1, 0, 1);
+			return { error: `回應不是完整的 JSON（HTTP ${res.status}）` };
+		}
+		const text = (data?.content ?? []).filter(b => b.type === 'text').map(b => b.text).join('');
+		const tokens = (data?.usage?.input_tokens ?? 0) + (data?.usage?.output_tokens ?? 0);
 
 		// ⚠️ 截斷必須當成錯誤，理由與 ygo-gemini.mjs 相同：截斷的 JSON 解析失敗
 		//    之後會退化成「查無結果」，跟「呼叫失敗」症狀一模一樣。
-		if (data.stop_reason === 'max_tokens') {
+		if (data?.stop_reason === 'max_tokens') {
 			stmt_bump.run(quota_day(), 1, tokens, 1);
 			return { error: '輸出被截斷（max_tokens 不足）' };
 		}
 		if (!text) {
 			stmt_bump.run(quota_day(), 1, tokens, 1);
-			return { error: `空回應（stop_reason=${data.stop_reason ?? '未知'}）` };
+			return { error: `空回應（stop_reason=${data?.stop_reason ?? '未知'}）` };
 		}
 		stmt_bump.run(quota_day(), 1, tokens, 0);
 		return { text };

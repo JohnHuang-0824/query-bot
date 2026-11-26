@@ -51,9 +51,13 @@ const RATE = {
 	// 每分鐘配額的 retryDelay 通常 20–60 秒；/ask 本來就要 20–35 秒而且已經 defer，
 	// 等一次比直接回「目前無法查詢」好。每日配額不會走到這裡（上面先擋掉了）。
 	INTERACTIVE_MAX_WAIT_MS: Number(process.env.GEMINI_MAX_WAIT_MS) || 60_000,
+	// 單次請求（含讀回應）等多久。正常 20–35 秒內回得來，沒有上限的話對方
+	// 卡住時使用者要盯著「思考中」好幾分鐘。
+	TIMEOUT_MS: 90_000,
 };
 
-const db = new DatabaseSync(new URL('./db/ruling.db', import.meta.url).pathname);
+// YGO_RULING_DB 是給測試用的，同 ygo-ruling.mjs。
+const db = new DatabaseSync(process.env.YGO_RULING_DB || new URL('./db/ruling.db', import.meta.url).pathname);
 db.exec(`
 	CREATE TABLE IF NOT EXISTS llm_usage (
 		day    TEXT PRIMARY KEY,
@@ -204,24 +208,30 @@ export async function generate(prompt, opts = {}) {
 		// ⚠️ 發出前就記。失敗的請求對方一樣算，我們也要算。
 		record('gemini');
 
-		let res;
+		let res, raw;
 		try {
 			res = await fetch(`${BASE}/${MODEL}:generateContent`, {
 				method: 'POST',
 				headers: { 'content-type': 'application/json', 'x-goog-api-key': KEY },
 				body: JSON.stringify(body),
+				signal: AbortSignal.timeout(RATE.TIMEOUT_MS),
 			});
+			// 內文在這裡一次讀完：讀到一半斷線或逾時也要回 {error}，不能丟例外
+			raw = await res.text();
 		}
 		catch (err) {
 			stmt_bump.run(today(), 1, 0, 1);
-			return { error: `連線失敗：${err.message}` };
+			return {
+				error: err.name === 'TimeoutError'
+					? `模型 ${RATE.TIMEOUT_MS / 1000} 秒內沒有回應`
+					: `連線失敗：${err.message}`,
+			};
 		}
 
 		// 429 是免費層最常見的失敗。⚠️ 退避時間要聽對方的，不要自己猜 ——
 		//    每分鐘配額的 retryDelay 常常是 20-60 秒，而第一版只等 2 秒、
 		//    4 秒就放棄，於是三次嘗試在 6 秒內燒掉、還多送兩次請求進去。
 		if (res.status === 429) {
-			const raw = await res.text();
 			const { delay_ms, quota, value } = parse_429(raw);
 			last_429 = quota || '未指明配額';
 			// 每日配額（quotaId 含 PerDay）用完 = 今天不用再試。記下來讓後面的請求在本機擋掉。
@@ -246,22 +256,27 @@ export async function generate(prompt, opts = {}) {
 		// 暫時過載，過幾秒就好 —— 不該把它直接丟給使用者變成「目前無法查詢」。
 		// 沿用 MAX_RETRY；最後一次嘗試仍失敗才往下走成錯誤。互動中的使用者等不久，批次評測可以多等。
 		if ([500, 502, 503, 504].includes(res.status) && attempt < RATE.MAX_RETRY) {
-			await res.text();
 			stmt_bump.run(today(), 1, 0, 1);
 			await sleep((opts.wait_for_slot ? 5000 : 1500) * (attempt + 1));
 			continue;
 		}
 		if (!res.ok) {
 			stmt_bump.run(today(), 1, 0, 1);
-			const detail = (await res.text()).slice(0, 200);
-			return { error: `HTTP ${res.status}：${detail}` };
+			return { error: `HTTP ${res.status}：${raw.slice(0, 200)}` };
 		}
 
-		const data = await res.json();
-		const cand = data.candidates?.[0];
+		let data;
+		try {
+			data = JSON.parse(raw);
+		}
+		catch {
+			stmt_bump.run(today(), 1, 0, 1);
+			return { error: `回應不是完整的 JSON（HTTP ${res.status}）` };
+		}
+		const cand = data?.candidates?.[0];
 		const text = cand?.content?.parts?.map(p => p.text ?? '').join('') ?? '';
 		const finish = cand?.finishReason ?? '未知';
-		const tokens = data.usageMetadata?.totalTokenCount ?? 0;
+		const tokens = data?.usageMetadata?.totalTokenCount ?? 0;
 
 		// ⚠️ 截斷**必須當成錯誤**。回一段不完整的 JSON 給呼叫端的話，
 		//    它解析失敗之後會退化成「查無結果」—— 那跟「呼叫失敗」是完全
