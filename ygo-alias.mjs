@@ -18,6 +18,7 @@
 import { readFileSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { choice_table } from './common_all.js';
+import { report_hidden_cards } from './ygo-datacheck.mjs';
 
 const DB_PATH = new URL('./db/ruling.db', import.meta.url).pathname;
 const db = new DatabaseSync(DB_PATH);
@@ -278,6 +279,8 @@ export function load_seed() {
 const stats = build_index();
 const seed = load_seed();
 console.log(`[alias] 索引 ${stats.keys} 鍵 / ${stats.cards} 張卡，種子 +${seed.loaded}（跳過 ${seed.skipped}）`);
+// 順便檢查有沒有卡因為 data/ 過期而整張不見（此時卡表已經載入完）
+report_hidden_cards();
 
 // ---------------------------------------------------------------- 提案流程
 
