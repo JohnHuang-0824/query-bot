@@ -17,8 +17,7 @@
 
 import { DatabaseSync } from 'node:sqlite';
 
-// YGO_RULES_DB 是給匯入的測試換掉語料用的，部署不要設。跟裁定快取分開兩個
-// 變數：問答流程的測試要換掉快取，但需要真的語料。
+// YGO_RULES_DB 是給測試換掉語料用的（':memory:'），部署不要設。
 const DB_PATH = process.env.YGO_RULES_DB || new URL('./db/ruling.db', import.meta.url).pathname;
 const db = new DatabaseSync(DB_PATH);
 

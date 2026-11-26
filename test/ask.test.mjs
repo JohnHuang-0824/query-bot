@@ -7,15 +7,16 @@
  *    改 verify_cites／mention_gaps／check_relevance／answer_question 之後要先跑
  *    這個，再去花模型額度跑評測。
  *
- * 檔尾的整條流程測試用假模型（opts.gen_fn），但需要本機的規則語料與卡表（db/）。
+ * 檔尾的整條流程測試用假模型（opts.gen_fn）和假的規則語料，但需要卡表（db/，
+ * 載入時自己下載）。
  * ⚠️ 匯入卡表會重寫 db/query.cdb，而 node --test 是各檔案平行跑 —— 會載入卡表的
  *    測試都放這個檔案，另開一個會有兩個行程同時寫、把資料庫弄壞。
  *
- * 裁定快取與節流開在記憶體（下面第一個 import），不碰本機快取。
+ * 裁定快取、節流與規則語料開在記憶體（下面第一個 import），不碰本機資料。
  */
 
 // ⚠️ 一定要是第一個 import：下面的模組一載入就開資料庫了。
-import 'data:text/javascript,process.env.YGO_RULING_DB = ":memory:";';
+import 'data:text/javascript,process.env.YGO_RULING_DB = ":memory:"; process.env.YGO_RULES_DB = ":memory:";';
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -278,22 +279,27 @@ test('展開：目錄裡找不到的編號原樣保留、不炸', () => {
 /* ---- answer_question：整條流程，用假模型 ---- */
 
 import { answer_question } from '../ygo-answer.mjs';
-import { toc_rows, get_section, corpus_state } from '../ygo-rules.mjs';
+import { import_sections, toc_rows, get_section } from '../ygo-rules.mjs';
 import { resolve_id } from '../ygo-alias.mjs';
 import { LIST_TTL_MS } from '../ygo-ruling.mjs';
 import { get_card } from '../ygo-query.mjs';
 import { choice_table } from '../common_all.js';
 
-// 章節編號從目前的語料挑，語料更新後編號會變，不能寫死。
-const TOC = corpus_state().sections ? toc_rows() : [];
-const children_of = r => TOC.filter(c => c.path.startsWith(`${r.path} › `));
-// 葉節點且內容夠長：不會被展開，也一定切得出句子
-const LEAF = TOC.find(r => r.chars > 400 && !children_of(r).length);
-// 空殼母章節：選到它要自動帶上子章節
-const STUB = TOC.find(r => r.chars < 400 && children_of(r).length);
+// 假語料：一個內容完整的葉章節，一個只有引言的母章節帶一個子章節。
+// 用假的才能在全新環境跑，結果也不會跟著來源改版而變。
+const section = (path, sentences) => {
+	const body = Array.from({ length: sentences }, (_, i) => `「${path}」的第 ${i + 1} 句測試內容。`).join('\n');
+	return { file: 'test.rst', title: path.split(' › ').at(-1), path, level: path.split(' › ').length, body, chars: body.length };
+};
+import_sections([
+	section('內容完整的章節', 40),
+	section('只有引言的母章節', 2),
+	section('只有引言的母章節 › 子章節', 40),
+]);
+// LEAF 不會被展開也一定切得出句子；STUB 夠短，選到它要自動帶上 CHILD
+const [LEAF, STUB, CHILD] = toc_rows();
 const CARD = { name: '拉的翼神龍-不死鳥', id: 10000090 };
 const NO_CARD = '不存在的卡名甲';
-const needs_corpus = { skip: TOC.length ? false : '規則語料沒匯入' };
 
 const select = (sections = [LEAF.id], cards = []) => ({ sections, cards });
 const reply = (extra = {}) => ({
@@ -325,7 +331,7 @@ async function ask(t, replies, { relevance = false, ...opts } = {}) {
 	return { r: result, calls };
 }
 
-test('流程：作答成功，引文由程式取原文，回答裡的句子編號被拿掉', needs_corpus, async t => {
+test('流程：作答成功，引文由程式取原文，回答裡的句子編號被拿掉', async t => {
 	const { r, calls } = await ask(t, [select(), reply({ answer: `可以⟦R${LEAF.id}-1⟧。` })]);
 	assert.equal(r.refused, false);
 	assert.equal(r.reason, undefined);
@@ -336,14 +342,14 @@ test('流程：作答成功，引文由程式取原文，回答裡的句子編�
 	assert.ok(calls.every(c => c.temperature === 0 && c.prompt.includes('測試問題')));
 });
 
-test('流程：作答成功時也回傳解析不到的卡名', needs_corpus, async t => {
+test('流程：作答成功時也回傳解析不到的卡名', async t => {
 	const { r } = await ask(t, [select([LEAF.id], [NO_CARD]), reply()]);
 	assert.equal(r.refused, false);
 	assert.deepEqual(r.unresolved, [NO_CARD]);
 	assert.deepEqual(r.cards, []);
 });
 
-test('流程：解析得到的卡，卡文送進第二段而且可以引用', needs_corpus, async t => {
+test('流程：解析得到的卡，卡文送進第二段而且可以引用', async t => {
 	const cites = [{ type: 'card', id: CARD.id, sents: [`C${CARD.id}-1`] }];
 	const { r, calls } = await ask(t, [select([], [CARD.name]), reply({ cites })]);
 	assert.ok(calls[1].prompt.includes(`⟦C${CARD.id}-1⟧`));
@@ -358,7 +364,7 @@ const NO_CID = [...choice_table.full].find(([name, id]) => {
 	const card = get_card(id);
 	return card && !card.cid && card.text.description && resolve_id(name) === id;
 });
-const needs_no_cid = { skip: needs_corpus.skip || (NO_CID ? false : '卡表裡沒有缺編號的卡') };
+const needs_no_cid = { skip: NO_CID ? false : '卡表裡沒有缺編號的卡' };
 
 test('流程：沒有官方編號的卡，卡文照樣送進第二段，但不查裁定', needs_no_cid, async t => {
 	const [name, id] = NO_CID;
@@ -372,7 +378,7 @@ test('流程：沒有官方編號的卡，卡文照樣送進第二段，但不�
 	assert.deepEqual(r.unresolved, []);
 });
 
-test('流程：裁定快取過期時重抓，新裁定和改過的全文送進第二段', needs_corpus, async t => {
+test('流程：裁定快取過期時重抓，新裁定和改過的全文送進第二段', async t => {
 	// 假的官方站：清單加明細。時鐘每個請求往前撥一點，免得節流真的去等。
 	const site = { 201: '舊的回答內容在這裡。' };
 	const real_now = Date.now;
@@ -399,14 +405,14 @@ test('流程：裁定快取過期時重抓，新裁定和改過的全文送進�
 	assert.ok(second.calls[1].prompt.includes('後來發布的新裁定內容'));
 });
 
-test('流程：卡表裡沒有的卡號算解析不到', needs_corpus, async t => {
+test('流程：卡表裡沒有的卡號算解析不到', async t => {
 	const { r } = await ask(t, [select([], ['999999999'])]);
 	assert.equal(r.reason, 'no_evidence');
 	assert.deepEqual(r.unresolved, ['999999999']);
 	assert.deepEqual(r.cards, []);
 });
 
-test('流程：沒有任何依據就不呼叫第二段', needs_corpus, async t => {
+test('流程：沒有任何依據就不呼叫第二段', async t => {
 	const { r, calls } = await ask(t, [select([], [NO_CARD])]);
 	assert.equal(r.reason, 'no_evidence');
 	assert.deepEqual(r.unresolved, [NO_CARD]);
@@ -419,7 +425,7 @@ for (const [reason, extra] of [
 	['mention_gap', () => ({ answer: '依據規則，可以。', cites: [] })],
 	['no_cite', () => ({ cites: [] })],
 ]) {
-	test(`流程：拒答原因 ${reason}`, needs_corpus, async t => {
+	test(`流程：拒答原因 ${reason}`, async t => {
 		const { r } = await ask(t, [select([LEAF.id], [NO_CARD]), reply(extra())]);
 		assert.equal(r.refused, true);
 		assert.equal(r.reason, reason);
@@ -427,7 +433,7 @@ for (const [reason, extra] of [
 	});
 }
 
-test('流程：相關性檢查開啟且引文被判不相關 → 拒答', needs_corpus, async t => {
+test('流程：相關性檢查開啟且引文被判不相關 → 拒答', async t => {
 	const verdict = { results: [{ n: 1, direct: false, reason: '講別的情況' }] };
 	const { r, calls } = await ask(t, [select(), reply(), verdict], { relevance: true });
 	assert.equal(r.reason, 'relevance');
@@ -435,34 +441,33 @@ test('流程：相關性檢查開啟且引文被判不相關 → 拒答', needs_
 	assert.ok(calls[2].prompt.includes('引文審查員'));
 });
 
-test('流程：相關性檢查通過就照常作答', needs_corpus, async t => {
+test('流程：相關性檢查通過就照常作答', async t => {
 	const verdict = { results: [{ n: 1, direct: true, reason: '適用' }] };
 	const { r } = await ask(t, [select(), reply(), verdict], { relevance: true });
 	assert.equal(r.refused, false);
 });
 
-test('流程：第一段出錯就停，錯誤原樣回傳', needs_corpus, async t => {
+test('流程：第一段出錯就停，錯誤原樣回傳', async t => {
 	const { r, calls } = await ask(t, [{ error: '429 每日上限' }]);
 	assert.equal(r.error, '429 每日上限');
 	assert.equal(calls.length, 1);
 });
 
-test('流程：第二段出錯或回的不是 JSON，都回報錯誤', needs_corpus, async t => {
+test('流程：第二段出錯或回的不是 JSON，都回報錯誤', async t => {
 	const failed = await ask(t, [select(), { error: '503' }]);
 	assert.equal(failed.r.error, '503');
 	const garbled = await ask(t, [select(), '我覺得可以']);
 	assert.match(garbled.r.error, /JSON/);
 });
 
-test('流程：force_sections 跳過第一段的模型呼叫', needs_corpus, async t => {
+test('流程：force_sections 跳過第一段的模型呼叫', async t => {
 	const { r, calls } = await ask(t, [reply()], { force_sections: [LEAF.id] });
 	assert.equal(r.refused, false);
 	assert.deepEqual(calls.map(c => c.stage), ['answer']);
 });
 
-test('流程：第一段挑到空殼母章節時，子章節也送進第二段', needs_corpus, async t => {
-	const child = children_of(STUB)[0];
+test('流程：第一段挑到空殼母章節時，子章節也送進第二段', async t => {
 	const { r, calls } = await ask(t, [select([STUB.id]), reply({ refused: true, cites: [] })]);
-	assert.ok(r.debug.sections.some(s => s.startsWith(`${child.id}:`)), r.debug.sections.join(' '));
-	assert.ok(calls[1].prompt.includes(`⟦R${child.id}-1⟧`));
+	assert.ok(r.debug.sections.some(s => s.startsWith(`${CHILD.id}:`)), r.debug.sections.join(' '));
+	assert.ok(calls[1].prompt.includes(`⟦R${CHILD.id}-1⟧`));
 });
