@@ -295,10 +295,33 @@ docker compose -f docker-compose.pi.yml exec -T bot node scripts/import-rules.mj
 
 ## 五、跟上游同步
 
+只要新的卡片資料的話**不用合併**，照四之三的「`data/` 過期」只取資料檔。
+以下是要拿上游程式修正時的做法。
+
+⚠️ **直接 `git merge` 完 bot 起不來，而 git 只會提醒你一個衝突。** 上游把
+`.mjs` 改名成 `.js`、`bot.js` 改成 `index.js`，我們自己新增的檔案還匯入舊
+檔名；那些檔案上游沒碰過，git 不會報任何東西。
+
+在分支上做，改完、測過才併回 `master`：
+
 ```bash
 git fetch upstream
+git switch -c merge-upstream
 git merge upstream/master      # 上游的預設分支是 master，不是 main
 ```
+
+2026-11-26 用 `upstream/master`（`71d2ffc`）試合併，需要改的地方：
+
+| 檔案 | 改什麼 |
+|---|---|
+| `package.json` | 唯一的衝突。取上游版本，補回 `"scripts": { "test": "node --test test/" }` |
+| `ygo-alias.mjs`、`ygo-answer.mjs`、`ygo-datacheck.mjs`、`ygo-ruling.mjs`、`commands/ask.js`、`commands/ruling.js`、`eval/run.mjs`、`scripts/check-data.mjs`、`test/ask.test.mjs` | 匯入路徑：`ygo-query`、`ygo-constant`、`ygo-utility` 的 `.mjs` 改 `.js`，`common_all.js` 改 `autocomplete.js` |
+| `Dockerfile` | `CMD` 的 `bot.js` 改 `index.js` |
+| `Dockerfile`、`.github/workflows/ci.yml` | 上游改用 pnpm 11，並多了 `pnpm-workspace.yaml`（安裝前要一起複製進映像）。現在釘的 `pnpm@9` 預期裝不起來 |
+| 這份文件 | 提到 `bot.js`、`common_all.js`、`reload_db()` 的段落 |
+
+那次試合併改完匯入路徑後，指令全部載入成功、132 個測試全過。**沒驗過的：**
+用新的 pnpm 建映像、上游升級的 discord.js、實際連上 Discord。
 
 ⚠️ 他更新很勤（`cdb` 與 `query-bot` 都是幾天一次）。**放生幾個月就會
 變成無法合併的分岔，那等於自己把提 PR 那條路關掉。**
