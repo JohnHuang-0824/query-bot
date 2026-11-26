@@ -15,7 +15,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, writeFileSync, readdirSync, statSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { parse_rst, import_sections, corpus_state, build_toc } from '../ygo-rules.mjs';
+import { parse_rst, import_sections, build_toc } from '../ygo-rules.mjs';
 
 const TARBALL = 'https://codeload.github.com/lucays/OCG-Rule-documentation/tar.gz/refs/heads/main';
 const USER_AGENT = 'ygo-ruling-bot/0.1 (+https://github.com/JohnHuang-0824/query-bot)';

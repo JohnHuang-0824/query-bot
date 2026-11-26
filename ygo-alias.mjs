@@ -294,7 +294,6 @@ const stmt_list_proposed = db.prepare(`
 const stmt_by_rowid = db.prepare('SELECT rowid, norm, card_id, raw, status FROM card_alias WHERE rowid = ?');
 const stmt_set_status_rowid = db.prepare("UPDATE card_alias SET status = 'approved' WHERE rowid = ?");
 const stmt_delete_rowid = db.prepare('DELETE FROM card_alias WHERE rowid = ?');
-const stmt_set_status = db.prepare('UPDATE card_alias SET status = ? WHERE norm = ? AND card_id = ?');
 
 /** 每人每日最多幾筆提案。防的是灌水，不是惡意 —— 惡意要靠審核擋。 */
 const PROPOSE_PER_DAY = 10;

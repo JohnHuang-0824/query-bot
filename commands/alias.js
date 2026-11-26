@@ -116,7 +116,7 @@ export async function execute(interaction) {
 	if (sub === 'pending') {
 		const rows = list_proposals(15);
 		const body = rows.length
-			? rows.map(r => `・**${r.raw}** → ${display_name(r.card_id)}　-# <@${r.proposed_by}>`).join('\n')
+			? rows.map(r => `・**${r.raw}** → ${display_name(r.card_id)}\u3000-# <@${r.proposed_by}>`).join('\n')
 			: '目前沒有待審提案。';
 		await interaction.reply({ content: body.slice(0, 1950), flags: MessageFlags.Ephemeral });
 		return;
