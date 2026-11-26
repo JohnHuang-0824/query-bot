@@ -47,7 +47,7 @@ cp .env.example .env
 | `GEMINI_API_KEY` | Gemini 免費層實測每天只有 20 次請求，也就是全服一天 10 題。本機上限預設不設，撞到 Google 的 429 才記下對方回報的上限 |
 | `ANTHROPIC_API_KEY` | Claude 訂閱不含 API 額度，要另外在 console 儲值。第一段預設 Haiku、第二段預設 Sonnet。⚠️ 這條路徑還沒用真的金鑰測過 |
 | `ASK_RELEVANCE_CHECK=1` | 多一次呼叫檢查引文是否直接涵蓋問題。拒答會變多。⚠️ 實測擋類推與誤殺有效答案兩者無法兼顧，**不建議開**（詳見 `.env.example`）。預設關閉 |
-| `ASK_PER_USER_PER_DAY` | 每人每日提問上限，預設 3，0 = 不限制 |
+| `ASK_PER_USER_PER_DAY` | 每人每日提問上限，預設 3，0 = 不限制。模型逾時、配額用完這類失敗不算（每天最多退回同樣次數）；拒答算。每分鐘 3 次的限制連失敗一起算 |
 
 Ollama（`OLLAMA_*`）只給本機開發跑評測用：實測 qwen3:8b 當第二段，引文驗證現在多半能過，
 但推論仍會拼湊，不適合正式作答。細節與注意事項（`OLLAMA_NUM_CTX` 至少 32768）見 `.env.example`。

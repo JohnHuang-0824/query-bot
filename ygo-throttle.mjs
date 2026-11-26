@@ -29,6 +29,7 @@ const stmt_add = db.prepare('INSERT INTO rate_event (source, at) VALUES (?, ?)')
 const stmt_count = db.prepare('SELECT COUNT(*) n FROM rate_event WHERE source = ? AND at > ?');
 const stmt_last = db.prepare('SELECT MAX(at) t FROM rate_event WHERE source = ?');
 const stmt_prune = db.prepare('DELETE FROM rate_event WHERE at < ?');
+const stmt_forget = db.prepare('DELETE FROM rate_event WHERE rowid = ? AND source = ?');
 
 /** 清掉兩天前的紀錄，這張表不該無限長大。 */
 function prune() {
@@ -87,11 +88,23 @@ export function wait_ms(source, min_interval_ms) {
 	return Math.max(0, min_interval_ms - (Date.now() - last));
 }
 
-/** 記一次請求。⚠️ 實際發出前就要記，不要等回應 —— 失敗的請求也是請求。 */
+/**
+ * 記一次請求。⚠️ 實際發出前就要記，不要等回應 —— 失敗的請求也是請求。
+ * @returns {number} 這筆紀錄的編號，給 forget 用
+ */
 export function record(source) {
-	stmt_add.run(source, Date.now());
+	const { lastInsertRowid } = stmt_add.run(source, Date.now());
 	if (Math.random() < 0.02)
 		prune();
+	return Number(lastInsertRowid);
+}
+
+/**
+ * 刪掉一筆紀錄，只給「使用者的每日次數」退回用（見 ygo-ask-limit.mjs）。
+ * ⚠️ 對外部服務的計數不能刪 —— 對方已經算進去了。
+ */
+export function forget(source, id) {
+	stmt_forget.run(id, source);
 }
 
 /** 目前用量，給診斷用。 */

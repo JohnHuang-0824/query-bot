@@ -15,8 +15,9 @@
  * 裁定快取、節流與規則語料開在記憶體（下面第一個 import），不碰本機資料。
  */
 
-// ⚠️ 一定要是第一個 import：下面的模組一載入就開資料庫了。
-import 'data:text/javascript,process.env.YGO_RULING_DB = ":memory:"; process.env.YGO_RULES_DB = ":memory:";';
+// ⚠️ 一定要是第一個 import：下面的模組一載入就開資料庫、讀設定了。
+//    金鑰換成假的：指令測試走真正的呼叫路徑，開發機 .env 的設定不能漏進來。
+import 'data:text/javascript,process.env.YGO_RULING_DB = ":memory:"; process.env.YGO_RULES_DB = ":memory:"; Object.assign(process.env, { GEMINI_API_KEY: "test-key", LLM_PROVIDER: "gemini", LLM_PROVIDER_SELECT: "", LLM_PROVIDER_ANSWER: "", ASK_PER_USER_PER_DAY: "3" });';
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -470,4 +471,40 @@ test('流程：第一段挑到空殼母章節時，子章節也送進第二段',
 	const { r, calls } = await ask(t, [select([STUB.id]), reply({ refused: true, cites: [] })]);
 	assert.ok(r.debug.sections.some(s => s.startsWith(`${CHILD.id}:`)), r.debug.sections.join(' '));
 	assert.ok(calls[1].prompt.includes(`⟦R${CHILD.id}-1⟧`));
+});
+
+/* ---------------------------------------------------------------- /ask 指令 */
+
+// ⚠️ 指令走真正的模型呼叫路徑，一定要把 fetch 換掉 —— 開發機的 .env 有金鑰，
+//    漏掉的話測試會吃掉真的配額。
+async function run_command(t, user_id, respond) {
+	const { execute } = await import('../commands/ask.js');
+	const real = globalThis.fetch;
+	t.mock.method(globalThis, 'fetch', async (url, init) =>
+		String(url).includes(':generateContent') ? respond() : real(url, init));
+	t.mock.method(console, 'error', () => {});
+	t.mock.method(console, 'warn', () => {});
+	const replies = [];
+	await execute({
+		user: { id: user_id },
+		options: { getString: () => '這張卡可以發動嗎？' },
+		deferReply: async () => {},
+		editReply: async m => replies.push(typeof m === 'string' ? m : m.content),
+	});
+	const { stats } = await import('../ygo-throttle.mjs');
+	return { reply: replies.at(-1), used: stats(`user:${user_id}`).last_day };
+}
+
+test('指令：模型呼叫失敗的那次不算每日次數', async t => {
+	const { reply, used } = await run_command(t, 'cmd-fail', () => new Response('壞掉了', { status: 400 }));
+	assert.match(reply, /目前無法查詢/);
+	assert.match(reply, /不計入你今天的提問次數/);
+	assert.equal(used, 0);
+});
+
+test('指令：拒答是正常回覆，照算次數', async t => {
+	const body = JSON.stringify({ candidates: [{ content: { parts: [{ text: '{"sections":[],"cards":[]}' }] }, finishReason: 'STOP' }] });
+	const { reply, used } = await run_command(t, 'cmd-refuse', () => new Response(body));
+	assert.match(reply, /查無足夠依據/);
+	assert.equal(used, 1);
 });

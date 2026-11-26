@@ -3,7 +3,7 @@ import { answer_question } from '../ygo-answer.mjs';
 import { get_section, section_url } from '../ygo-rules.mjs';
 import { get_ruling } from '../ygo-ruling.mjs';
 import { get_card } from '../ygo-query.mjs';
-import { blocked_reason, record } from '../ygo-throttle.mjs';
+import { take_ask_slot } from '../ygo-ask-limit.mjs';
 
 export const module_url = import.meta.url;
 
@@ -11,7 +11,8 @@ export const module_url = import.meta.url;
 export const experimental = true;
 
 /**
- * 每人每日提問上限（架構決策第十二節）。
+ * 每人每日提問上限（架構決策第十二節）。系統失敗的那次不算（見
+ * ygo-ask-limit.mjs）。
  *
  * ⚠️ 這不是防濫用的客套話 —— 一題要兩次模型呼叫（第一段選章節、第二段作答；
  *    開了 ASK_RELEVANCE_CHECK 是三次）。預設供應者 Gemini 的實測免費層是
@@ -72,19 +73,21 @@ export async function execute(interaction) {
 	// ⚠️ defer 一定在任何 I/O 之前。這條路要 20-35 秒，沒 defer 必死。
 	await interaction.deferReply();
 
-	const key = `user:${interaction.user.id}`;
-	// per_day 給 0 的話 blocked_reason 會擋掉每一次（count >= 0 恆真），
-	// 所以「不限制」要在這裡換成一個大到不會踩到的數，不是傳 0 下去。
-	const per_day = PER_USER_PER_DAY > 0 ? PER_USER_PER_DAY : Number.MAX_SAFE_INTEGER;
-	const over = blocked_reason(key, { per_minute: 3, per_day });
-	if (over) {
-		await interaction.editReply(`你問得有點快（${over}）。稍後再試。`);
+	const slot = take_ask_slot(interaction.user.id, PER_USER_PER_DAY);
+	if (slot.blocked) {
+		await interaction.editReply(`你問得有點快（${slot.blocked}）。稍後再試。`);
 		return;
 	}
 	const question = interaction.options.getString('question').trim();
-	record(key);
 
-	const r = await answer_question(question);
+	let r;
+	try {
+		r = await answer_question(question);
+	}
+	catch (error) {
+		slot.refund();
+		throw error;
+	}
 
 	// ⚠️ 守衛原本寫成 `r.error && !r.answer`，而 answer_question 在每一條
 	//    錯誤路徑上都會填一句佔位的 answer（「目前無法查詢，請稍後再試。」）
@@ -92,8 +95,10 @@ export async function execute(interaction) {
 	//    一句罐頭訊息，真正的原因（429？404？連線失敗？）連日誌都沒有。
 	//    回報過來就是一句「出現錯誤」，而配額每天只有 20 次，只能靠重現去猜。
 	if (r.error) {
+		const refunded = slot.refund();
 		console.error(`[ask] 失敗：${r.error}｜問題：${question}`);
-		await interaction.editReply(`目前無法查詢：${r.error}`);
+		const note = refunded && PER_USER_PER_DAY > 0 ? '\n-# 這次不計入你今天的提問次數' : '';
+		await interaction.editReply(`目前無法查詢：${r.error}${note}`);
 		return;
 	}
 
