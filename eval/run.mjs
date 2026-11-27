@@ -55,6 +55,7 @@ import { cache_state, fetch_rulings, get_common_rulings } from '../ygo-ruling.mj
 import { answer_question } from '../ygo-answer.mjs';
 import { get_section } from '../ygo-rules.mjs';
 import { REASON_TEXT, score_answer } from './score.mjs';
+import { halt_reason } from './halt.mjs';
 
 const ALLOW_FETCH = process.argv.includes('--fetch');
 
@@ -81,6 +82,7 @@ function save_answer(c, r, rule_paths) {
 	saved.push({
 		id: c.id, question: c.question, answer: r.answer, refused: r.refused, reason: r.reason,
 		rule_ids: r.rule_ids, rule_paths, ruling_fids: r.ruling_fids, quotes: r.quotes, dropped: r.dropped,
+		fabricated: r.fabricated, raw_answer: r.raw_answer,
 	});
 	const settings = {
 		fetch: ALLOW_FETCH,
@@ -101,8 +103,10 @@ const rules_spec = JSON.parse(readFileSync(new URL('./rules-cases.json', import.
 const all_cases = [...spec.cases, ...rules_spec.cases];
 
 const results = { pass: 0, fail: 0, known: 0, skip: 0, draft: 0, manual: 0 };
-// 一旦撞到每日配額就記下來，後面的題目直接跳過，不再送請求。
-let quota_dead = '';
+// 撞到每日配額或模型過載就停（見 halt.mjs），後面的題目直接跳過，不再送請求。
+let halted = null;
+// 需要模型但沒拿到回答的題目，結尾給續跑指令用
+const unanswered = [];
 const failures = [];
 const manual_review = [];
 
@@ -236,17 +240,15 @@ async function run_rules(c) {
 	// ⚠️ 配額用完之後就不要再打了。第一版會把剩下的題目一題一題送進去
 	//    撞 429，於是報表上十幾個「作答失敗」看起來像模型壞掉，實際上
 	//    是同一件事發生了十幾次 —— 而且每一次都真的送了請求出去。
-	if (quota_dead)
-		return skip(c, `今日配額已用完，未呼叫（${quota_dead}）`);
+	if (halted) {
+		unanswered.push(c.id);
+		return skip(c, `${halted}，未呼叫`);
+	}
 
 	const r = await answer_question(c.question, { allow_fetch: ALLOW_FETCH, wait_for_slot: true });
 	if (r.error) {
-		// ⚠️ 只有**每日**配額用完才停整輪。每分鐘的 429 等一下就好 ——
-		//    第一版把所有 429 都當成「今日用完」，於是撞到一次每分鐘上限，
-		//    後面的題目全被跳過，報表上看起來像額度沒了，其實還有。
-		//    ygo-gemini.mjs 對每日配額的錯誤訊息一定含「每日上限」。
-		if (/每日上限|PerDay/i.test(r.error))
-			quota_dead = r.error;
+		halted = halt_reason(r.error);
+		unanswered.push(c.id);
 		return skip(c, `作答失敗：${r.error}`);
 	}
 
@@ -299,12 +301,12 @@ for (const c of all_cases) {
 console.log(`
 通過 ${results.pass}\u3000失敗 ${results.fail}\u3000已知失敗 ${results.known}\u3000跳過 ${results.skip}\u3000草稿 ${results.draft}\u3000待人工 ${results.manual}`);
 
-if (quota_dead) {
+if (unanswered.length) {
 	console.log(`
-⚠️ 這一輪沒跑完：${quota_dead}
+⚠️ ${unanswered.length} 題沒有作答${halted ? `：${halted}` : ''}
    免費層是每天 20 次請求、一題兩次呼叫，所以一天最多跑十題。
    配額在**太平洋時間午夜**歸零（台灣時間下午 3 點或 4 點，看有沒有日光節約）。
-   續跑用 --only=，例如：node eval/run.mjs --llm --fetch --only=rules-00`);
+   續跑：node eval/run.mjs --llm${ALLOW_FETCH ? ' --fetch' : ''} --only=${unanswered.join(',')}`);
 }
 
 if (results.draft)
@@ -329,6 +331,8 @@ if (answers.length) {
 		console.log(`--- ${a.id}`);
 		console.log(`  問  ${a.question}`);
 		console.log(`  答  ${a.r.answer.split(String.fromCharCode(10)).join(' ')}`);
+		if (a.r.raw_answer)
+			console.log(`  被作廢的原始回答  ${a.r.raw_answer.split(String.fromCharCode(10)).join(' ')}`);
 		console.log(`  引用 規則[${a.r.rule_ids.join(',') || '無'}] 裁定[${a.r.ruling_fids.join(',') || '無'}] 拒答=${a.r.refused}${a.r.reason ? `（${REASON_TEXT[a.r.reason] ?? a.r.reason}）` : ''}`);
 		// 程式取回的實際引文：引文是真的，但它支不支持結論要靠人對照 gold 判斷。
 		// 拒答時（相關性檢查擋下）這裡也會有，正好看它擋掉的是什麼。

@@ -115,10 +115,26 @@ test('句號超出範圍、為 0、不是編號 → 作廢', () => {
 	}
 });
 
-test('沒有 sents 的內容、或超過 5 句 → 作廢', () => {
-	assert.equal(verify([{ type: 'rule', id: 21, sents: [] }]).bad_quotes.length, 1);
+test('沒有 sents 的內容、或超過 5 句 → 作廢，但不算編造', () => {
+	const empty = verify([{ type: 'rule', id: 21, sents: [] }]);
+	assert.equal(empty.bad_quotes.length, 1);
+	assert.deepEqual(empty.fabricated, []);
 	const six = ['R21-1', 'R21-2', 'R21-3', 'R21-4', 'R22-1', 'R22-2'];
-	assert.equal(verify([{ type: 'rule', id: 21, sents: six }]).bad_quotes.length, 1);
+	const many = verify([{ type: 'rule', id: 21, sents: six }]);
+	assert.match(many.bad_quotes[0], /超過 5 句/);
+	assert.deepEqual([many.dropped.length, many.fabricated.length, many.quotes.length], [1, 0, 0]);
+});
+
+test('指向沒送過的東西算編造；超過 5 句裡混了不存在的句號也算', () => {
+	const bad = [
+		{ type: 'rule', id: 999, sents: ['R21-1'] },
+		{ type: 'rule', id: 21, sents: ['R21-9'] },
+		{ type: 'rule', id: 21, sents: ['R21-1', 'R21-2', 'R21-3', 'R21-4', 'R22-1', 'R22-9'] },
+		{ type: 'rule', id: 21, quote: '這句話原文裡根本沒有出現過' },
+	];
+	for (const c of bad)
+		assert.equal(verify([c]).fabricated.length, 1, JSON.stringify(c));
+	assert.deepEqual(verify([{ type: 'rule', id: 21, quote: '太短' }]).fabricated, []);
 });
 
 test('⚠️ 我們沒送過的 id 一律丟掉，不算引文錯誤也不進 ids', () => {
@@ -423,6 +439,7 @@ test('流程：沒有任何依據就不呼叫第二段', async t => {
 for (const [reason, extra] of [
 	['model', () => ({ refused: true, answer: '查無依據。', cites: [] })],
 	['bad_quote', () => ({ cites: [{ type: 'rule', id: LEAF.id, sents: [`R${LEAF.id}-9999`] }] })],
+	['cite_format', () => ({ cites: [{ type: 'rule', id: LEAF.id, sents: [] }] })],
 	['mention_gap', () => ({ answer: '依據規則，可以。', cites: [] })],
 	['no_cite', () => ({ cites: [] })],
 ]) {
@@ -433,6 +450,14 @@ for (const [reason, extra] of [
 		assert.deepEqual(r.unresolved, [NO_CARD]);
 	});
 }
+
+test('流程：回答被作廢時保留模型原本寫的內容，但不放進給使用者的回答', async t => {
+	const written = '模型原本的結論：可以發動。';
+	const { r } = await ask(t, [select(), reply({ answer: written, cites: [{ type: 'rule', id: LEAF.id, sents: [] }] })]);
+	assert.equal(r.raw_answer, written);
+	assert.ok(!r.answer.includes(written));
+	assert.deepEqual([r.dropped.length, r.fabricated.length], [1, 0]);
+});
 
 test('流程：相關性檢查開啟且引文被判不相關 → 拒答', async t => {
 	const verdict = { results: [{ n: 1, direct: false, reason: '講別的情況' }] };

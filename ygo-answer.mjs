@@ -180,9 +180,13 @@ export const strip_marks = t => (t ?? '').replace(/⟦[^⟧]*⟧/g, '');
  * 編號帶來源（R21-3）時，引文取自編號指的那一句，**不看 cite 自己寫的 id** ——
  * 句子是真的、也確實送過，只是歸屬要照它真正所在的那條依據。
  * 裸數字（3）沿用 cite 自己指的那一條。
+ *
+ * 丟掉的引用都在 dropped。其中指向我們沒送過的東西（編號、句號、引文）的另外
+ * 列在 fabricated；其餘只是格式不符（沒附句子編號、引文太短、句數超過上限），
+ * 一樣丟掉，但不是模型在編。
  */
 export function verify_cites(cites, { sent_map, evidence }) {
-	const out = { rule_ids: [], ruling_fids: [], card_ids: [], quotes: [], dropped: [], bad_quotes: [] };
+	const out = { rule_ids: [], ruling_fids: [], card_ids: [], quotes: [], dropped: [], fabricated: [], bad_quotes: [] };
 	const bucket = { rule: out.rule_ids, ruling: out.ruling_fids, card: out.card_ids };
 	const add = (type, id) => {
 		if (!bucket[type].includes(id))
@@ -196,6 +200,7 @@ export function verify_cites(cites, { sent_map, evidence }) {
 		const n = Number(c?.fid ?? c?.id);
 		if (!sent_map[c?.type]?.has(n)) {
 			out.dropped.push(JSON.stringify(c));
+			out.fabricated.push(JSON.stringify(c));
 			continue;
 		}
 		// ⚠️ 編號對得上還不夠 —— 引文也要真的出現在那條依據裡。
@@ -203,7 +208,7 @@ export function verify_cites(cites, { sent_map, evidence }) {
 		const found = [];
 		if (Array.isArray(c.sents)) {
 			const toks = [...new Set(c.sents.map(x => String(x).replace(/[⟦⟧\s]/g, '').toUpperCase()))].filter(Boolean);
-			if (!toks.length || toks.length > MAX_SENTS)
+			if (!toks.length)
 				verdict = 'short';
 			else {
 				const picks = new Map();
@@ -222,6 +227,9 @@ export function verify_cites(cites, { sent_map, evidence }) {
 						picks.set(key, { type, id, idx: new Set() });
 					picks.get(key).idx.add(i);
 				}
+				// 先確認每一句都存在再看句數 —— 超過上限而且有不存在的編號，算編造
+				if (verdict === 'ok' && toks.length > MAX_SENTS)
+					verdict = 'too_many';
 				if (verdict === 'ok') {
 					for (const { type, id, idx } of picks.values()) {
 						const all = sent_map[type].get(id);
@@ -236,9 +244,15 @@ export function verify_cites(cites, { sent_map, evidence }) {
 				found.push({ type: c.type, id: n, quote: c.quote });
 		}
 		if (verdict !== 'ok') {
-			const why = verdict === 'short' ? '沒附句子編號或太多句' : '句子編號不存在或引文找不到';
+			const why = {
+				short: '沒附句子編號或引文太短',
+				too_many: `超過 ${MAX_SENTS} 句`,
+				missing: '句子編號不存在或引文找不到',
+			}[verdict];
 			out.bad_quotes.push(`${c.type}:${n}（${why}）`);
 			out.dropped.push(JSON.stringify(c));
+			if (verdict === 'missing')
+				out.fabricated.push(JSON.stringify(c));
 			continue;
 		}
 		for (const f of found) {
@@ -341,8 +355,12 @@ function find_hedges(text) {
  * @returns {Promise<{
  *   refused: boolean, answer: string, model: string,
  *   rule_ids: number[], ruling_fids: number[], card_ids: number[], cards: string[],
- *   error?: string, dropped?: string[], unresolved?: string[]
+ *   error?: string, dropped?: string[], fabricated?: string[], unresolved?: string[],
+ *   raw_answer?: string
  * }>}
+ *   fabricated：dropped 裡指向沒送過的東西的那幾筆（見 verify_cites）。
+ *   raw_answer：回答被程式作廢時模型原本寫的內容，只給評測與除錯看，
+ *   ⚠️ 不可以顯示給使用者 —— 它就是沒通過檢查的那份。
  */
 export async function answer_question(question, opts = {}) {
 	const allow_fetch = opts.allow_fetch ?? true;
@@ -486,7 +504,9 @@ export async function answer_question(question, opts = {}) {
 		ruling: new Map(ruling_ctx.map(r => [r.fid, norm_quote(`${r.question}\n${r.answer ?? ''}`)])),
 		card: new Map(card_ctx.map(c => [c.id, norm_quote(`${c.name}\n${c.text}`)])),
 	};
-	const { rule_ids, ruling_fids, card_ids, quotes, dropped, bad_quotes } = verify_cites(cites, { sent_map, evidence });
+	const { rule_ids, ruling_fids, card_ids, quotes, dropped, fabricated, bad_quotes } = verify_cites(cites, { sent_map, evidence });
+	// 整個作廢時跟著回傳，事後才看得到模型原本寫了什麼、為什麼被擋
+	const voided = { refused: true, dropped, fabricated, raw_answer: strip_marks(parsed.answer).trim() };
 
 	const refused = parsed.refused === true;
 	const hedges = refused ? [] : find_hedges(parsed.answer);
@@ -494,11 +514,12 @@ export async function answer_question(question, opts = {}) {
 		console.warn(`[ask] 回答含推論用語 ${JSON.stringify(hedges)}｜問題：${question}`);
 
 	// 引文對不上 = 模型在這條引用上編造或亂改。整個回答作廢，不是只拿掉那條 ——
-	// 它的結論多半就是靠那段「原文」得出來的。
+	// 它的結論多半就是靠那段「原文」得出來的。格式不符（太多句等）同樣作廢，
+	// 只是原因分開記。
 	if (!refused && bad_quotes.length) {
 		console.warn(`[ask] 引文驗證失敗 ${bad_quotes.join('、')}｜問題：${question}`);
 		return {
-			...base, cards: resolved, refused: true, reason: 'bad_quote', dropped, debug,
+			...base, cards: resolved, ...voided, reason: fabricated.length ? 'bad_quote' : 'cite_format', debug,
 			answer: '回答的引文無法對回依據原文，因此不提供結論 —— 請洽裁判或官方事務局。',
 		};
 	}
@@ -511,7 +532,7 @@ export async function answer_question(question, opts = {}) {
 		if (missing.length) {
 			console.warn(`[ask] 回答提到${missing.join('、')}但沒有對應引用｜問題：${question}`);
 			return {
-				...base, cards: resolved, refused: true, reason: 'mention_gap', dropped, debug,
+				...base, cards: resolved, ...voided, reason: 'mention_gap', debug,
 				answer: `回答聲稱依據${missing.join('、')}，但沒有對應的有效引用，因此不提供結論 —— 請洽裁判或官方事務局。`,
 			};
 		}
@@ -528,7 +549,7 @@ export async function answer_question(question, opts = {}) {
 		if (bad.length) {
 			console.warn(`[ask] 相關性檢查未通過 ${bad.join('、')}｜問題：${question}`);
 			return {
-				...base, cards: resolved, refused: true, reason: 'relevance', dropped, debug, quotes,
+				...base, cards: resolved, ...voided, reason: 'relevance', debug, quotes,
 				answer: '引用的依據沒有直接涵蓋你問的情況，因此不提供結論 —— 請洽裁判或官方事務局。',
 			};
 		}
@@ -539,7 +560,7 @@ export async function answer_question(question, opts = {}) {
 	//    而使用者分不出來。
 	if (!refused && !rule_ids.length && !ruling_fids.length && !card_ids.length) {
 		return {
-			...base, cards: resolved, refused: true, reason: 'no_cite', dropped, debug,
+			...base, cards: resolved, ...voided, reason: 'no_cite', debug,
 			answer: '這題找不到可以對應的依據，因此不提供結論 —— 請洽裁判或官方事務局。',
 		};
 	}
@@ -550,7 +571,7 @@ export async function answer_question(question, opts = {}) {
 		// 模型有時會把 ⟦3⟧ 這種編號寫進回答文字，對使用者沒意義，去掉
 		answer: strip_marks(parsed.answer).trim(),
 		rule_ids, ruling_fids, card_ids, cards: resolved, debug, quotes, unresolved,
-		...(dropped.length ? { dropped } : {}),
+		...(dropped.length ? { dropped, fabricated } : {}),
 		...(hedges.length ? { hedges } : {}),
 	};
 }

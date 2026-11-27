@@ -9,6 +9,7 @@ import { bad_conclusions } from './conclude.mjs';
 export const REASON_TEXT = {
 	model: '模型自己拒答',
 	bad_quote: '引文驗證失敗（編造或亂改）',
+	cite_format: '引用格式不符（沒附句子編號、引文太短或超過句數上限）',
 	mention_gap: '提到規則／裁定卻沒有對應引用',
 	relevance: '相關性檢查未通過',
 	no_cite: '沒有任何有效引用',
@@ -17,7 +18,8 @@ export const REASON_TEXT = {
 
 /**
  * @param {object} c 題目（rules-cases.json 的一筆）
- * @param {{ answer: string, refused: boolean, reason?: string, dropped?: string[] }} r 作答結果
+ * @param {{ answer: string, refused: boolean, reason?: string, dropped?: string[],
+ *   fabricated?: string[] }} r 作答結果
  * @param {string[]} rule_paths 引用到的規則章節路徑
  * @returns {string[]} 不符合的項目，空陣列 = 通過
  */
@@ -70,9 +72,14 @@ export function score_answer(c, r, rule_paths = []) {
 	}
 
 	// ⚠️ 模型編造引用是重大缺陷，不是小瑕疵 —— 管線雖然已經把它丟掉了，
-	//    但它發生過這件事本身就要讓這題紅燈。
-	if (r.dropped?.length)
-		bad.push(`模型編造了引用：${r.dropped.join(' ')}`);
+	//    但它發生過這件事本身就要讓這題紅燈。格式不符（超過句數上限等）也算
+	//    紅燈，只是分開寫。fabricated 是後來才加的欄位，沒有它的舊存檔分不
+	//    出來，照舊當編造。
+	const fabricated = r.fabricated ?? r.dropped ?? [];
+	if (fabricated.length)
+		bad.push(`模型編造了引用：${fabricated.join(' ')}`);
+	else if (r.dropped?.length)
+		bad.push(`引用格式不符：${r.dropped.join(' ')}`);
 
 	return bad;
 }

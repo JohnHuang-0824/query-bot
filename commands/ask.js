@@ -129,9 +129,10 @@ export async function execute(interaction) {
 	await interaction.editReply({ content: clip(body, 1950), components: rows });
 
 	// ⚠️ 模型編造引用時留下痕跡。管線已經把它丟掉了，但這件事發生過本身
-	//    就值得記一筆 —— 它是判斷 prompt 要不要再收緊的唯一訊號。
+	//    就值得記一筆 —— 它是判斷 prompt 要不要再收緊的唯一訊號。格式不符
+	//    （太多句等）另外標，免得兩種混在一起數。
 	if (r.dropped?.length)
-		console.warn(`[ask] 模型編造引用 ${JSON.stringify(r.dropped)}｜問題：${question}`);
+		console.warn(`[ask] ${r.fabricated?.length ? '模型編造引用' : '引用格式不符'} ${JSON.stringify(r.dropped)}｜問題：${question}`);
 
 	// 第一段抽到的卡名在索引裡找不到：回答照給，只是沒有那張卡的卡文與裁定。
 	// 這是補別名（alias-seed.json）的唯一線索，不記就永遠不知道使用者用了什麼說法。

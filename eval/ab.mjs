@@ -12,7 +12,8 @@
  *   --cards=    固定的卡名，逗號分隔
  *   --runs=     兩邊各跑幾次，預設 5
  *   --dry       用假模型走一遍，不花額度、不寫結果檔。花額度之前先跑這個。
- *               --dry=error、--dry=quota 模擬呼叫失敗與每日額度用完。
+ *               --dry=error、--dry=quota、--dry=overload 模擬一般失敗、每日額度
+ *               用完、模型過載（後兩種會停整輪）。
  *
  * 第一段跳過，所以一次作答只呼叫一次模型，總共 runs × 2 次。兩邊交替跑，
  * 每輪還交換先後，免得時段因素全落在同一邊。同一份提示詞本來就有時過有時
@@ -103,6 +104,7 @@ async function inside() {
 	const { generate } = await import('../ygo-llm.mjs');
 	const { get_section } = await import('../ygo-rules.mjs');
 	const { score_answer } = await import('./score.mjs');
+	const { halt_reason } = await import('./halt.mjs');
 
 	const sections = list('sections').map(Number);
 	const missing = sections.filter(id => !get_section(id));
@@ -113,7 +115,7 @@ async function inside() {
 	console.log(`固定卡名：${list('cards').join('、') || '無'}  各跑 ${runs} 次${args.dry ? '（假模型，不花額度）' : `（共 ${runs * 2} 次呼叫）`}\n`);
 
 	// 假模型只用來確認流程走得通：兩邊都回同一份引用規則的答案
-	const failure = { error: '模擬的呼叫失敗', quota: '節流：每日上限（模擬）' }[args.dry];
+	const failure = { error: '模擬的呼叫失敗', quota: '節流：每日上限（模擬）', overload: 'HTTP 503：模擬' }[args.dry];
 	const fake = failure
 		? { error: failure }
 		: { text: JSON.stringify({ refused: false, answer: '不能適用，尚未適用。', cites: [{ type: 'rule', id: sections[0], sents: [`R${sections[0]}-1`] }] }) };
@@ -123,9 +125,10 @@ async function inside() {
 	};
 	const file = new URL(`${c.id}-${new Date().toISOString().replace(/[:.]/g, '-')}.json`, AB_DIR);
 	const results = [];
-	let quota_dead = false;
+	// 每日配額用完或模型過載就停（見 halt.mjs）
+	let halted = null;
 
-	for (let run = 1; run <= runs && !quota_dead; run++) {
+	for (let run = 1; run <= runs && !halted; run++) {
 		// 單數輪 old 先、雙數輪 new 先
 		for (const side of run % 2 ? SIDES : [...SIDES].reverse()) {
 			let has_kind = null;
@@ -139,7 +142,7 @@ async function inside() {
 			const record = { run, side, has_kind, rulings_sent: r.debug?.rulings, ...(r.error ? { error: r.error } : {}) };
 			if (r.error) {
 				record.outcome = '呼叫失敗';
-				quota_dead = /每日上限|PerDay/i.test(r.error);
+				halted = halt_reason(r.error);
 			}
 			else {
 				const rule_paths = r.rule_ids.map(id => get_section(id)?.path ?? '');
@@ -148,6 +151,7 @@ async function inside() {
 					outcome: !bad.length ? '通過' : r.refused ? '拒答' : '沒通過',
 					bad, answer: r.answer, refused: r.refused, reason: r.reason,
 					rule_ids: r.rule_ids, ruling_fids: r.ruling_fids, quotes: r.quotes, dropped: r.dropped,
+					fabricated: r.fabricated, raw_answer: r.raw_answer,
 				});
 			}
 			results.push(record);
@@ -156,9 +160,11 @@ async function inside() {
 			console.log(`第 ${run} 輪 ${side}（${has_kind ? '有' : '無'}卡片種類）：${record.outcome}${r.error ? `  ${r.error}` : ''}`);
 			if (!r.error) {
 				console.log(`  ${r.answer.replace(/\s+/g, ' ')}`);
+				if (r.raw_answer)
+					console.log(`  被作廢的原始回答  ${r.raw_answer.replace(/\s+/g, ' ')}`);
 				console.log(`  引用 規則[${r.rule_ids.join(',') || '無'}] 裁定[${r.ruling_fids.join(',') || '無'}]${record.outcome === '沒通過' ? `  ${record.bad.join('；')}` : ''}`);
 			}
-			if (quota_dead)
+			if (halted)
 				break;
 		}
 	}
@@ -173,8 +179,8 @@ async function inside() {
 		if (mine.some(x => x.has_kind !== (side === 'new')))
 			console.log(`⚠️ ${side} 送出的提示詞${side === 'new' ? '沒有' : '帶了'}卡片種類 —— 如果要比的不是這個差異可以忽略`);
 	}
-	if (quota_dead)
-		console.log('⚠️ 今日額度用完，沒跑完。兩邊次數可能不一樣，比較時要看清楚。');
+	if (halted)
+		console.log(`⚠️ ${halted}，沒跑完。兩邊次數可能不一樣，比較時要看清楚。`);
 	console.log(args.dry ? '假跑，沒有寫結果檔' : `存在 db/eval-runs/ab/${file.pathname.split('/').pop()}`);
 	process.exit(0);
 }
